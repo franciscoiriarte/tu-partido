@@ -1,6 +1,9 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+const rutasProtegidas = ["/dashboard", "/mis-partidos"];
+const rutasAuth = ["/login", "/registro"];
+
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
@@ -25,7 +28,24 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const path = request.nextUrl.pathname;
+
+  // Sin sesión intentando acceder a ruta protegida → login
+  if (!user && rutasProtegidas.some((r) => path.startsWith(r))) {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+
+  // Con sesión intentando ir a login/registro → redirigir según rol
+  if (user && rutasAuth.includes(path)) {
+    const role = user.user_metadata?.role;
+    return NextResponse.redirect(
+      new URL(role === "club" ? "/dashboard" : "/mis-partidos", request.url)
+    );
+  }
 
   return supabaseResponse;
 }
