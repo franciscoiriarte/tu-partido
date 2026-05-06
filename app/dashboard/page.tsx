@@ -19,9 +19,14 @@ export default async function DashboardPage() {
   if (!complejo) {
     return (
       <main className="min-h-screen bg-white px-4 py-8">
-        <p className="text-sm text-black">
+        <p className="text-sm text-black mb-6">
           Tu complejo aún no está configurado. Contactá al administrador.
         </p>
+        <form action="/auth/signout" method="post">
+          <button type="submit" className="text-sm text-black underline">
+            Cerrar sesión
+          </button>
+        </form>
       </main>
     );
   }
@@ -37,6 +42,11 @@ export default async function DashboardPage() {
       </h1>
       <p className="text-sm text-black/50 mb-8">Gestión de turnos</p>
       <TurnosManager canchas={canchas} />
+      <form action="/auth/signout" method="post" className="mt-12">
+        <button type="submit" className="text-sm text-black underline">
+          Cerrar sesión
+        </button>
+      </form>
     </main>
   );
 }

@@ -28,7 +28,7 @@ export default function RegistroPage() {
     });
 
     if (error) {
-      setError("No se pudo crear la cuenta. Intentá de nuevo.");
+      setError(error.message);
       setLoading(false);
       return;
     }

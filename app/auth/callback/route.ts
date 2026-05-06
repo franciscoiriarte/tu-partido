@@ -11,9 +11,9 @@ export async function GET(request: Request) {
 
     if (!error && data.user) {
       const role = data.user.user_metadata?.role;
-      return NextResponse.redirect(
-        `${origin}${role === "club" ? "/dashboard" : "/mis-partidos"}`
-      );
+      const destino =
+        role === "admin" ? "/admin" : "/dashboard";
+      return NextResponse.redirect(`${origin}${destino}`);
     }
   }
 
