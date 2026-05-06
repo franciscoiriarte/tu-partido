@@ -8,12 +8,13 @@ export default async function DashboardPage() {
   } = await supabase.auth.getUser();
 
   if (!user) redirect("/login");
-  if (user.user_metadata?.role !== "club") redirect("/mis-partidos");
+
+  const nombreComplejo = user.user_metadata?.nombre_complejo ?? user.email;
 
   return (
     <main className="min-h-screen bg-white px-4 py-8">
-      <h1 className="text-2xl font-semibold text-black">Panel del club</h1>
-      <p className="text-black mt-2 text-sm">{user.email}</p>
+      <h1 className="text-2xl font-semibold text-black">{nombreComplejo}</h1>
+      <p className="text-sm text-black mt-1">Panel del complejo</p>
     </main>
   );
 }
