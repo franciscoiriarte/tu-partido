@@ -1,5 +1,6 @@
 import { createClient } from "@/utils/supabase/server";
 import { redirect } from "next/navigation";
+import TurnosManager from "./TurnosManager";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -9,12 +10,33 @@ export default async function DashboardPage() {
 
   if (!user) redirect("/login");
 
-  const nombreComplejo = user.user_metadata?.nombre_complejo ?? user.email;
+  const { data: complejo } = await supabase
+    .from("complejos")
+    .select("*, canchas(*)")
+    .eq("user_id", user.id)
+    .single();
+
+  if (!complejo) {
+    return (
+      <main className="min-h-screen bg-white px-4 py-8">
+        <p className="text-sm text-black">
+          Tu complejo aún no está configurado. Contactá al administrador.
+        </p>
+      </main>
+    );
+  }
+
+  const canchas = (complejo.canchas ?? []).sort((a: { nombre: string }, b: { nombre: string }) =>
+    a.nombre.localeCompare(b.nombre)
+  );
 
   return (
-    <main className="min-h-screen bg-white px-4 py-8">
-      <h1 className="text-2xl font-semibold text-black">{nombreComplejo}</h1>
-      <p className="text-sm text-black mt-1">Panel del complejo</p>
+    <main className="min-h-screen bg-white px-4 py-8 max-w-lg mx-auto">
+      <h1 className="text-2xl font-semibold text-black mb-1">
+        {complejo.nombre}
+      </h1>
+      <p className="text-sm text-black/50 mb-8">Gestión de turnos</p>
+      <TurnosManager canchas={canchas} />
     </main>
   );
 }
