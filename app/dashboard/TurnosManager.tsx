@@ -3,6 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 
+const HORARIOS = Array.from({ length: (23 * 60 + 30 - 7 * 60) / 30 + 1 }, (_, i) => {
+  const minutos = 7 * 60 + i * 30;
+  const h = Math.floor(minutos / 60);
+  const m = minutos % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+});
+
 type Cancha = { id: string; nombre: string };
 type Turno = {
   id: string;
@@ -138,21 +145,29 @@ function CanchaSection({
       </ul>
 
       <form onSubmit={handleSubmit} className="flex items-center gap-2">
-        <input
-          type="time"
+        <select
           value={horaInicio}
           onChange={(e) => setHoraInicio(e.target.value)}
           required
-          className="border border-black px-2 py-2 text-sm text-black outline-none w-24"
-        />
+          className="border border-black px-2 py-2 text-sm text-black outline-none"
+        >
+          <option value="">Inicio</option>
+          {HORARIOS.map((h) => (
+            <option key={h} value={h}>{h}</option>
+          ))}
+        </select>
         <span className="text-sm text-black">a</span>
-        <input
-          type="time"
+        <select
           value={horaFin}
           onChange={(e) => setHoraFin(e.target.value)}
           required
-          className="border border-black px-2 py-2 text-sm text-black outline-none w-24"
-        />
+          className="border border-black px-2 py-2 text-sm text-black outline-none"
+        >
+          <option value="">Fin</option>
+          {HORARIOS.map((h) => (
+            <option key={h} value={h}>{h}</option>
+          ))}
+        </select>
         <button
           type="submit"
           className="bg-black text-white px-4 py-2 text-sm font-medium"
