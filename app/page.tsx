@@ -1,10 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { createClient } from "@/utils/supabase/client";
 
-const COMPLEJOS = ["Complejo de Prueba", "Puma Padel", "Runa Padel"];
-const DIAS = ["Hoy", "Ayer", "5 may", "4 may"];
-const HORAS = ["08:30", "10:00", "12:00", "14:00", "16:00", "18:00", "20:30", "22:00"];
+const HORAS = Array.from({ length: (23 * 60 + 30 - 7 * 60) / 30 + 1 }, (_, i) => {
+  const minutos = 7 * 60 + i * 30;
+  const h = Math.floor(minutos / 60);
+  const m = minutos % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+});
+
+function generarDias() {
+  return Array.from({ length: 4 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const valor = d.toLocaleDateString("en-CA");
+    const etiqueta =
+      i === 0 ? "Hoy" : i === 1 ? "Ayer"
+        : d.toLocaleDateString("es-AR", { day: "numeric", month: "short" });
+    return { valor, etiqueta };
+  });
+}
 
 const FEATURES = [
   "Instalación llave en mano sin obra civil",
@@ -29,9 +46,35 @@ const STATS = [
 ];
 
 export default function Home() {
-  const [complejo, setComplejo] = useState("Runa Padel");
-  const [dia, setDia] = useState("Hoy");
-  const [hora, setHora] = useState("20:30");
+  const router = useRouter();
+  const dias = generarDias();
+
+  const [complejos, setComplejos] = useState<{ id: string; nombre: string }[]>([]);
+  const [complejo, setComplejo] = useState("");
+  const [dia, setDia] = useState(dias[0].valor);
+  const [hora, setHora] = useState("");
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase
+      .from("complejos")
+      .select("id, nombre")
+      .order("nombre")
+      .then(({ data }) => {
+        if (data && data.length > 0) {
+          setComplejos(data);
+          setComplejo(data[0].nombre);
+        }
+      });
+  }, []);
+
+  function handleBuscar(e: React.FormEvent) {
+    e.preventDefault();
+    if (!complejo || !dia || !hora) return;
+    router.push(
+      `/resultados?complejo=${encodeURIComponent(complejo)}&fecha=${dia}&hora=${hora}`
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#0a1f1a] text-white">
@@ -42,23 +85,63 @@ export default function Home() {
         <p className="text-sm text-white/55 mb-6">
           Encontrá el video de tu turno y compartilo en segundos.
         </p>
-        <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5 max-w-md mx-auto text-left">
+
+        <form
+          onSubmit={handleBuscar}
+          className="bg-white/[0.03] border border-white/10 rounded-2xl p-5 max-w-md mx-auto text-left"
+        >
           <Label>Complejo</Label>
-          <ChipRow items={COMPLEJOS} active={complejo} onSelect={setComplejo} />
+          {complejos.length === 0 ? (
+            <p className="text-xs text-white/30 mb-4">Cargando complejos…</p>
+          ) : (
+            <ChipRow
+              items={complejos.map((c) => c.nombre)}
+              active={complejo}
+              onSelect={setComplejo}
+            />
+          )}
+
           <Label>Día</Label>
-          <ChipRow items={DIAS} active={dia} onSelect={setDia} />
+          <div className="flex gap-2 mb-4">
+            {dias.map((d) => (
+              <button
+                key={d.valor}
+                type="button"
+                onClick={() => setDia(d.valor)}
+                className={`px-3 py-2 border rounded-lg text-xs flex-1 transition-all ${
+                  dia === d.valor
+                    ? "bg-[#2D9D75] border-[#2D9D75] text-white"
+                    : "bg-white/[0.04] border-white/10 text-white/70 hover:text-white hover:border-[#5DCAA5]/30"
+                }`}
+              >
+                {d.etiqueta}
+              </button>
+            ))}
+          </div>
+
           <Label>Hora</Label>
           <select
             value={hora}
             onChange={(e) => setHora(e.target.value)}
+            required
             className="w-full px-3 py-2 bg-white/[0.04] border border-white/10 rounded-lg text-white text-sm mb-4 appearance-none"
           >
-            {HORAS.map((h) => <option key={h}>{h}</option>)}
+            <option value="">Seleccioná un horario</option>
+            {HORAS.map((h) => (
+              <option key={h} value={h} style={{ background: "#0a1f1a" }}>
+                {h}
+              </option>
+            ))}
           </select>
-          <button className="w-full py-3 bg-[#2D9D75] hover:bg-[#1D9E75] rounded-xl font-medium text-sm transition-colors">
+
+          <button
+            type="submit"
+            disabled={!complejo || !dia || !hora}
+            className="w-full py-3 bg-[#2D9D75] hover:bg-[#1D9E75] rounded-xl font-medium text-sm transition-colors disabled:opacity-30"
+          >
             Buscar mi partido
           </button>
-        </div>
+        </form>
       </section>
 
       {/* CÓMO FUNCIONA */}
@@ -144,18 +227,58 @@ export default function Home() {
   );
 }
 
+/* ── Mock Player ── */
 function MockPlayer() {
   return (
-    <div className="aspect-video bg-[#1a1a1a] rounded-xl relative overflow-hidden border border-white/10">
-      <div className="absolute top-2.5 left-2.5 bg-[#E24B4A] text-white px-2 py-0.5 rounded text-[10px] font-semibold tracking-wider flex items-center gap-1.5">
-        <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-        LIVE
+    <div className="aspect-video bg-[#111] rounded-xl relative overflow-hidden border border-white/10">
+
+      {/* Padel scoreboard — top left */}
+      <div className="absolute top-2.5 left-2.5 rounded-lg overflow-hidden text-[9px] shadow-lg" style={{ minWidth: 170 }}>
+        {/* header */}
+        <div className="bg-[#2D9D75] px-2 py-[3px] flex items-center justify-between">
+          <span className="text-white font-bold tracking-widest text-[8px] uppercase">Tu Partido</span>
+          <span className="text-white/80 text-[8px]">Cancha 2 · Final</span>
+        </div>
+        {/* column headers */}
+        <div className="bg-black/80 backdrop-blur-sm flex">
+          <span className="flex-1 px-2 py-[2px] text-white/0">·</span>
+          <span className="w-6 text-center py-[2px] text-white/40 border-l border-white/10">S1</span>
+          <span className="w-6 text-center py-[2px] text-white/40 border-l border-white/10">S2</span>
+          <span className="w-8 text-center py-[2px] text-white/40 border-l border-white/10">Pts</span>
+        </div>
+        {/* team 1 — serving */}
+        <div className="bg-black/70 backdrop-blur-sm flex items-center border-t border-white/10">
+          <span className="flex-1 px-2 py-1 text-white truncate flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#5DCAA5] inline-block flex-shrink-0" />
+            Ramírez/Sosa
+          </span>
+          <span className="w-6 text-center py-1 text-white/50 border-l border-white/10">6</span>
+          <span className="w-6 text-center py-1 text-white font-semibold border-l border-white/10">3</span>
+          <span className="w-8 text-center py-1 text-[#5DCAA5] font-bold border-l border-white/10">40</span>
+        </div>
+        {/* team 2 */}
+        <div className="bg-black/70 backdrop-blur-sm flex items-center border-t border-white/10">
+          <span className="flex-1 px-2 py-1 text-white/75 truncate pl-4">López/García</span>
+          <span className="w-6 text-center py-1 text-white/50 border-l border-white/10">4</span>
+          <span className="w-6 text-center py-1 text-white font-semibold border-l border-white/10">2</span>
+          <span className="w-8 text-center py-1 text-white/80 font-bold border-l border-white/10">15</span>
+        </div>
       </div>
-      <div className="absolute top-2.5 right-2.5 bg-black/50 text-white px-2 py-0.5 rounded text-[10px] flex items-center gap-1">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        142
+
+      {/* LIVE + viewers — top right */}
+      <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
+        <div className="bg-black/50 text-white px-1.5 py-0.5 rounded text-[9px] flex items-center gap-1">
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          142
+        </div>
+        <div className="bg-[#E24B4A] text-white px-1.5 py-0.5 rounded text-[9px] font-semibold tracking-wider flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+          LIVE
+        </div>
       </div>
-      <div className="absolute inset-0 flex items-center justify-center opacity-15">
+
+      {/* court graphic — center */}
+      <div className="absolute inset-0 flex items-center justify-center opacity-10">
         <svg width="120" height="80" viewBox="0 0 120 80" fill="none" stroke="#5DCAA5" strokeWidth="1">
           <rect x="10" y="10" width="100" height="60" rx="2"/>
           <line x1="10" y1="40" x2="110" y2="40"/>
@@ -163,21 +286,11 @@ function MockPlayer() {
           <rect x="35" y="25" width="50" height="30"/>
         </svg>
       </div>
-      <div className="absolute bottom-2.5 left-2.5 right-2.5 bg-black/65 backdrop-blur-sm px-2.5 py-2 rounded-md grid grid-cols-[1fr_auto_1fr] gap-2 items-center">
-        <div className="flex flex-col gap-0.5 min-w-0">
-          <span className="text-[10px] text-white truncate">Juan + Pedro</span>
-          <span className="text-[10px] text-white/50 truncate">Set 1: 6-4</span>
-        </div>
-        <span className="text-lg font-semibold text-[#5DCAA5] tabular-nums px-2">5—3</span>
-        <div className="flex flex-col gap-0.5 min-w-0 text-right">
-          <span className="text-[10px] text-white truncate">María + Carlos</span>
-          <span className="text-[10px] text-white/50 truncate">Cancha 2 · Final</span>
-        </div>
-      </div>
     </div>
   );
 }
 
+/* ── Shared UI ── */
 function Brand() {
   return (
     <div className="inline-flex items-center gap-1">
@@ -200,12 +313,16 @@ function ChipRow({ items, active, onSelect }: { items: string[]; active: string;
   return (
     <div className="flex flex-wrap gap-2 mb-4">
       {items.map((item) => (
-        <button key={item} onClick={() => onSelect(item)}
+        <button
+          key={item}
+          type="button"
+          onClick={() => onSelect(item)}
           className={`px-3 py-2 border rounded-lg text-xs transition-all ${
             active === item
               ? "bg-[#2D9D75] border-[#2D9D75] text-white"
               : "bg-white/[0.04] border-white/10 text-white/70 hover:text-white hover:border-[#5DCAA5]/30"
-          }`}>
+          }`}
+        >
           {item}
         </button>
       ))}
