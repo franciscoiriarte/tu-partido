@@ -2,6 +2,7 @@ import { createAdminClient } from "@/utils/supabase/admin";
 import { createClient } from "@/utils/supabase/server";
 import { redirect } from "next/navigation";
 import { agregarCancha, eliminarCancha } from "./actions";
+import SubirVideo from "./SubirVideo";
 
 export default async function AdminPage() {
   const supabase = await createClient();
@@ -16,6 +17,21 @@ export default async function AdminPage() {
     .from("complejos")
     .select("*, canchas(*)")
     .order("nombre");
+
+  const { data: turnosRecientes } = await admin
+    .from("turnos")
+    .select("id, fecha, hora_inicio, hora_fin, canchas(nombre)")
+    .order("fecha", { ascending: false })
+    .order("hora_inicio", { ascending: false })
+    .limit(30);
+
+  const turnos = (turnosRecientes ?? []).map((t: any) => ({
+    id: t.id,
+    fecha: t.fecha,
+    hora_inicio: t.hora_inicio,
+    hora_fin: t.hora_fin,
+    cancha_nombre: t.canchas?.nombre ?? "",
+  }));
 
   return (
     <main className="min-h-screen bg-white px-4 py-8 max-w-lg mx-auto">
@@ -76,6 +92,8 @@ export default async function AdminPage() {
           </form>
         </div>
       ))}
+
+      <SubirVideo turnos={turnos} />
     </main>
   );
 }
