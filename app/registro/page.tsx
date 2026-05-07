@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { createClient } from "@/utils/supabase/client";
 
 export default function RegistroPage() {
@@ -39,14 +40,12 @@ export default function RegistroPage() {
 
   if (done) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-white px-4">
-        <div className="w-full max-w-sm">
-          <h1 className="text-2xl font-semibold text-black mb-4">
-            Revisá tu email
-          </h1>
-          <p className="text-black text-base">
-            Te mandamos un link de confirmación a <strong>{email}</strong>. Hacé
-            clic en ese link para activar tu cuenta.
+      <main className="min-h-screen flex items-center justify-center px-4"
+        style={{ background: "var(--background)" }}>
+        <div className="w-full max-w-sm text-center">
+          <p className="text-white text-lg font-medium mb-2">Revisá tu email</p>
+          <p className="text-white/50 text-sm">
+            Te mandamos un link de confirmación a <strong className="text-white">{email}</strong>.
           </p>
         </div>
       </main>
@@ -54,56 +53,54 @@ export default function RegistroPage() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-white px-4">
-      <div className="w-full max-w-sm">
-        <h1 className="text-2xl font-semibold text-black mb-2">
-          Registrar complejo
-        </h1>
-        <p className="text-sm text-black mb-8">
-          Esta sección es para clubes y complejos de pádel.
-        </p>
-        <form onSubmit={handleRegistro} className="flex flex-col gap-4">
-          <input
-            type="text"
-            placeholder="Nombre del complejo"
-            value={nombreComplejo}
-            onChange={(e) => setNombreComplejo(e.target.value)}
-            required
-            className="border border-black px-4 py-3 text-black text-base outline-none w-full"
-          />
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            className="border border-black px-4 py-3 text-black text-base outline-none w-full"
-          />
-          <input
-            type="password"
-            placeholder="Contraseña (mínimo 6 caracteres)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={6}
-            className="border border-black px-4 py-3 text-black text-base outline-none w-full"
-          />
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          <button
-            type="submit"
-            disabled={loading}
-            className="bg-black text-white py-3 text-base font-medium disabled:opacity-50"
-          >
-            {loading ? "Creando cuenta..." : "Crear cuenta"}
-          </button>
-        </form>
-        <p className="mt-6 text-sm text-black">
-          ¿Ya tenés cuenta?{" "}
-          <Link href="/login" className="underline">
-            Iniciá sesión
-          </Link>
-        </p>
-      </div>
+    <main className="min-h-screen flex flex-col items-center justify-center px-4"
+      style={{ background: "var(--background)" }}>
+      <Image src="/logo.png" alt="Tu Partido" width={120} height={120} className="mb-10" />
+      <form onSubmit={handleRegistro} className="flex flex-col gap-4 w-full max-w-sm">
+        <input
+          type="text"
+          placeholder="Nombre del complejo"
+          value={nombreComplejo}
+          onChange={(e) => setNombreComplejo(e.target.value)}
+          required
+          className="px-4 py-3 text-white text-base outline-none border"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+        />
+        <input
+          type="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          className="px-4 py-3 text-white text-base outline-none border"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+        />
+        <input
+          type="password"
+          placeholder="Contraseña (mínimo 6 caracteres)"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
+          minLength={6}
+          className="px-4 py-3 text-white text-base outline-none border"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+        />
+        {error && <p className="text-sm text-red-400">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading}
+          className="py-3 text-base font-semibold disabled:opacity-40"
+          style={{ background: "var(--accent)", color: "#fff" }}
+        >
+          {loading ? "Creando cuenta..." : "Crear cuenta"}
+        </button>
+      </form>
+      <p className="mt-6 text-sm text-white/40">
+        ¿Ya tenés cuenta?{" "}
+        <Link href="/login" className="text-white/70 underline">
+          Iniciá sesión
+        </Link>
+      </p>
     </main>
   );
 }

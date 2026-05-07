@@ -47,13 +47,11 @@ export default function BuscadorHome({ complejos }: { complejos: Complejo[] }) {
   }
 
   return (
-    <form
-      onSubmit={handleBuscar}
-      className="flex flex-col gap-8 w-full max-w-sm"
-    >
+    <form onSubmit={handleBuscar} className="flex flex-col gap-8 w-full max-w-sm">
+
       {/* Complejos */}
       <div>
-        <p className="text-xs text-black/40 uppercase tracking-widest mb-3">
+        <p className="text-xs text-white/40 uppercase tracking-widest mb-3">
           Complejo
         </p>
         <div className="flex flex-wrap gap-2">
@@ -62,24 +60,25 @@ export default function BuscadorHome({ complejos }: { complejos: Complejo[] }) {
               key={c.id}
               type="button"
               onClick={() => setComplejoId(c.id)}
-              className={`border border-black px-4 py-3 text-sm font-medium transition-colors ${
+              className="px-4 py-3 text-sm font-medium border transition-colors"
+              style={
                 complejoId === c.id
-                  ? "bg-black text-white"
-                  : "bg-white text-black"
-              }`}
+                  ? { background: "var(--accent)", borderColor: "var(--accent)", color: "#fff" }
+                  : { background: "transparent", borderColor: "var(--border)", color: "rgba(255,255,255,0.7)" }
+              }
             >
               {c.nombre}
             </button>
           ))}
           {complejos.length === 0 && (
-            <p className="text-sm text-black/40">Sin complejos disponibles.</p>
+            <p className="text-sm text-white/40">Sin complejos disponibles.</p>
           )}
         </div>
       </div>
 
       {/* Fechas */}
       <div>
-        <p className="text-xs text-black/40 uppercase tracking-widest mb-3">
+        <p className="text-xs text-white/40 uppercase tracking-widest mb-3">
           Día
         </p>
         <div className="flex gap-2">
@@ -88,11 +87,12 @@ export default function BuscadorHome({ complejos }: { complejos: Complejo[] }) {
               key={f.valor}
               type="button"
               onClick={() => setFecha(f.valor)}
-              className={`border border-black px-3 py-2 text-sm font-medium flex-1 transition-colors ${
+              className="px-3 py-2 text-sm font-medium flex-1 border transition-colors"
+              style={
                 fecha === f.valor
-                  ? "bg-black text-white"
-                  : "bg-white text-black"
-              }`}
+                  ? { background: "var(--accent)", borderColor: "var(--accent)", color: "#fff" }
+                  : { background: "transparent", borderColor: "var(--border)", color: "rgba(255,255,255,0.7)" }
+              }
             >
               {f.etiqueta}
             </button>
@@ -102,18 +102,23 @@ export default function BuscadorHome({ complejos }: { complejos: Complejo[] }) {
 
       {/* Hora */}
       <div>
-        <p className="text-xs text-black/40 uppercase tracking-widest mb-3">
+        <p className="text-xs text-white/40 uppercase tracking-widest mb-3">
           Hora
         </p>
         <select
           value={hora}
           onChange={(e) => setHora(e.target.value)}
           required
-          className="border border-black px-4 py-3 text-black text-base outline-none w-full"
+          className="w-full px-4 py-3 text-sm outline-none border"
+          style={{
+            background: "var(--surface)",
+            borderColor: "var(--border)",
+            color: hora ? "#fff" : "rgba(255,255,255,0.4)",
+          }}
         >
           <option value="">Seleccioná un horario</option>
           {HORARIOS.map((h) => (
-            <option key={h} value={h}>
+            <option key={h} value={h} style={{ background: "#1a1a1a", color: "#fff" }}>
               {h}
             </option>
           ))}
@@ -123,7 +128,8 @@ export default function BuscadorHome({ complejos }: { complejos: Complejo[] }) {
       <button
         type="submit"
         disabled={!complejoId || !fecha || !hora}
-        className="bg-black text-white py-3 text-base font-medium disabled:opacity-30"
+        className="py-4 text-base font-semibold tracking-wide transition-opacity disabled:opacity-30"
+        style={{ background: "var(--accent)", color: "#fff" }}
       >
         Buscar mi partido
       </button>

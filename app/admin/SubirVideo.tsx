@@ -39,18 +39,19 @@ export default function SubirVideo({ turnos }: { turnos: Turno[] }) {
   }
 
   return (
-    <div className="mt-12 border-t border-black/10 pt-8">
-      <h2 className="text-lg font-semibold text-black mb-6">Subir video</h2>
+    <div className="mt-12 pt-8 border-t" style={{ borderColor: "var(--border)" }}>
+      <h2 className="text-lg font-semibold text-white mb-6">Subir video</h2>
       <form onSubmit={handleSubir} className="flex flex-col gap-4">
         <select
           value={turnoId}
           onChange={(e) => setTurnoId(e.target.value)}
           required
-          className="border border-black px-4 py-3 text-black text-sm outline-none w-full"
+          className="px-4 py-3 text-white text-sm outline-none w-full border"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
         >
-          <option value="">Seleccioná el turno</option>
+          <option value="" style={{ background: "#1a1a1a" }}>Seleccioná el turno</option>
           {turnos.map((t) => (
-            <option key={t.id} value={t.id}>
+            <option key={t.id} value={t.id} style={{ background: "#1a1a1a" }}>
               {t.fecha} — {t.cancha_nombre} — {t.hora_inicio.slice(0, 5)} a{" "}
               {t.hora_fin.slice(0, 5)}
             </option>
@@ -62,20 +63,22 @@ export default function SubirVideo({ turnos }: { turnos: Turno[] }) {
           accept="video/*"
           required
           onChange={(e) => setArchivo(e.target.files?.[0] ?? null)}
-          className="border border-black px-4 py-3 text-black text-sm outline-none w-full"
+          className="px-4 py-3 text-white/60 text-sm outline-none w-full border"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
         />
 
         {estado === "listo" && (
-          <p className="text-sm text-black">Video subido correctamente.</p>
+          <p className="text-sm text-white/60">Video subido correctamente.</p>
         )}
         {estado === "error" && (
-          <p className="text-sm text-red-600">Error al subir. Intentá de nuevo.</p>
+          <p className="text-sm text-red-400">Error al subir. Intentá de nuevo.</p>
         )}
 
         <button
           type="submit"
           disabled={estado === "subiendo"}
-          className="bg-black text-white py-3 text-sm font-medium disabled:opacity-40"
+          className="py-3 text-sm font-semibold text-white disabled:opacity-40"
+          style={{ background: "var(--accent)" }}
         >
           {estado === "subiendo" ? "Subiendo..." : "Subir video"}
         </button>

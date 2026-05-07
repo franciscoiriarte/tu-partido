@@ -1,4 +1,5 @@
 import { createClient } from "@/utils/supabase/server";
+import Image from "next/image";
 import BuscadorHome from "./BuscadorHome";
 
 export default async function HomePage() {
@@ -9,9 +10,19 @@ export default async function HomePage() {
     .order("nombre");
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center bg-white px-4 py-12">
-      <h1 className="text-3xl font-semibold text-black mb-2">Tu Partido</h1>
-      <p className="text-black text-base mb-10">Buscá el video de tu partido</p>
+    <main className="min-h-screen flex flex-col items-center justify-center px-4 py-12"
+      style={{ background: "var(--background)" }}>
+      <Image
+        src="/logo.png"
+        alt="Tu Partido"
+        width={180}
+        height={180}
+        className="mb-8"
+        priority
+      />
+      <p className="text-white/50 text-sm mb-10 tracking-wide uppercase">
+        Encontrá el video de tu partido
+      </p>
       <BuscadorHome complejos={complejos ?? []} />
     </main>
   );

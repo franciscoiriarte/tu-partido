@@ -72,7 +72,8 @@ export default function TurnosManager({ canchas }: { canchas: Cancha[] }) {
         type="date"
         value={fecha}
         onChange={(e) => setFecha(e.target.value)}
-        className="border border-black px-4 py-2 text-black text-sm outline-none mb-8"
+        className="px-4 py-2 text-white text-sm outline-none mb-8 border"
+        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
       />
 
       {canchas.map((cancha) => (
@@ -86,7 +87,7 @@ export default function TurnosManager({ canchas }: { canchas: Cancha[] }) {
       ))}
 
       {canchas.length === 0 && (
-        <p className="text-sm text-black/50">
+        <p className="text-sm text-white/40">
           No hay canchas configuradas. Contactá al administrador.
         </p>
       )}
@@ -118,25 +119,26 @@ function CanchaSection({
 
   return (
     <div className="mb-8">
-      <h2 className="text-base font-medium text-black mb-3">
+      <h2 className="text-base font-medium text-white mb-3">
         {cancha.nombre}
       </h2>
 
       <ul className="mb-4">
         {turnos.length === 0 && (
-          <li className="text-sm text-black/40 py-2">Sin turnos cargados</li>
+          <li className="text-sm text-white/40 py-2">Sin turnos cargados</li>
         )}
         {turnos.map((turno) => (
           <li
             key={turno.id}
-            className="flex items-center justify-between py-2 border-b border-black/10"
+            className="flex items-center justify-between py-2 border-b"
+            style={{ borderColor: "var(--border)" }}
           >
-            <span className="text-sm text-black">
+            <span className="text-sm text-white">
               {turno.hora_inicio.slice(0, 5)} — {turno.hora_fin.slice(0, 5)}
             </span>
             <button
               onClick={() => onEliminar(turno.id)}
-              className="text-xs text-black underline"
+              className="text-xs text-white/40 underline"
             >
               Eliminar
             </button>
@@ -149,28 +151,31 @@ function CanchaSection({
           value={horaInicio}
           onChange={(e) => setHoraInicio(e.target.value)}
           required
-          className="border border-black px-2 py-2 text-sm text-black outline-none"
+          className="px-2 py-2 text-sm text-white outline-none border"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
         >
           <option value="">Inicio</option>
           {HORARIOS.map((h) => (
-            <option key={h} value={h}>{h}</option>
+            <option key={h} value={h} style={{ background: "#1a1a1a" }}>{h}</option>
           ))}
         </select>
-        <span className="text-sm text-black">a</span>
+        <span className="text-sm text-white/40">a</span>
         <select
           value={horaFin}
           onChange={(e) => setHoraFin(e.target.value)}
           required
-          className="border border-black px-2 py-2 text-sm text-black outline-none"
+          className="px-2 py-2 text-sm text-white outline-none border"
+          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
         >
           <option value="">Fin</option>
           {HORARIOS.map((h) => (
-            <option key={h} value={h}>{h}</option>
+            <option key={h} value={h} style={{ background: "#1a1a1a" }}>{h}</option>
           ))}
         </select>
         <button
           type="submit"
-          className="bg-black text-white px-4 py-2 text-sm font-medium"
+          className="px-4 py-2 text-sm font-semibold text-white"
+          style={{ background: "var(--accent)" }}
         >
           +
         </button>
