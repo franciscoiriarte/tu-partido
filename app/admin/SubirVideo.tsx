@@ -26,12 +26,14 @@ export default function SubirVideo({ turnos }: { turnos: Turno[] }) {
     formData.append("turno_id", turnoId);
 
     const res = await fetch("/api/upload", { method: "POST", body: formData });
+    const data = await res.json();
 
     if (res.ok) {
       setEstado("listo");
       setArchivo(null);
       setTurnoId("");
     } else {
+      console.error("Upload error:", data);
       setEstado("error");
     }
   }

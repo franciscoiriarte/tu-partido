@@ -16,16 +16,21 @@ export async function POST(request: Request) {
   const key = `turnos/${turnoId}.${extension}`;
   const buffer = Buffer.from(await archivo.arrayBuffer());
 
-  await r2.send(
-    new PutObjectCommand({
-      Bucket: R2_BUCKET,
-      Key: key,
-      Body: buffer,
-      ContentType: archivo.type || "video/mp4",
-    })
-  );
+  try {
+    await r2.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        Body: buffer,
+        ContentType: archivo.type || "video/mp4",
+      })
+    );
+  } catch (err: any) {
+    console.error("R2 upload error:", err);
+    return NextResponse.json({ error: err?.message ?? "Error R2" }, { status: 500 });
+  }
 
-  const videoUrl = `${process.env.R2_ENDPOINT}/${R2_BUCKET}/${key}`;
+  const videoUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
 
   const supabase = createAdminClient();
   await supabase.from("turnos").update({ video_url: videoUrl }).eq("id", turnoId);
