@@ -22,6 +22,29 @@ const HORAS = Array.from({ length: (23 * 60 + 30 - 7 * 60) / 30 + 1 }, (_, i) =>
 
 const DURACIONES = [60, 90, 120];
 
+function horaASegundos(h: string) {
+  const [hh, mm] = h.split(":").map(Number);
+  return hh * 3600 + mm * 60;
+}
+
+function segundosAHora(s: number) {
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00`;
+}
+
+function generarSlots(inicio: string, fin: string, durMin: number) {
+  const slots: { inicio: string; fin: string }[] = [];
+  let actual = horaASegundos(inicio);
+  const finSeg = horaASegundos(fin);
+  const dur = durMin * 60;
+  while (actual + dur <= finSeg) {
+    slots.push({ inicio: segundosAHora(actual), fin: segundosAHora(actual + dur) });
+    actual += dur;
+  }
+  return slots;
+}
+
 type Cancha = { id: string; nombre: string };
 type HorarioRow = {
   id?: string;
@@ -109,8 +132,35 @@ function CanchaHorario({ cancha, horarios }: { cancha: Cancha; horarios: Horario
             .eq("dia_semana", dia);
         }
       }
+
+      // Generar turnos de hoy si el día de hoy está activo
+      const diaSemanaHoy = new Date().getDay();
+      const configHoy = config[diaSemanaHoy];
+      if (configHoy?.activo) {
+        const hoy = new Date().toLocaleDateString("en-CA");
+        const slots = generarSlots(configHoy.hora_inicio, configHoy.hora_fin, duracion);
+
+        const { data: existentes } = await supabase
+          .from("turnos")
+          .select("hora_inicio")
+          .eq("cancha_id", cancha.id)
+          .eq("fecha", hoy);
+
+        const horasExistentes = new Set((existentes ?? []).map((t) => t.hora_inicio));
+        const nuevos = slots
+          .filter((s) => !horasExistentes.has(s.inicio))
+          .map((s) => ({ cancha_id: cancha.id, fecha: hoy, hora_inicio: s.inicio, hora_fin: s.fin }));
+
+        if (nuevos.length > 0) {
+          await supabase.from("turnos").insert(nuevos);
+        }
+      }
+
       setEstado("ok");
-      setTimeout(() => setEstado("idle"), 2000);
+      setTimeout(() => {
+        setEstado("idle");
+        window.location.reload(); // refresca para mostrar los turnos nuevos
+      }, 1000);
     } catch {
       setEstado("error");
     }
