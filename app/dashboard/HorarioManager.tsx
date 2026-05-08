@@ -126,22 +126,30 @@ function CanchaHorario({ cancha, horarios }: { cancha: Cancha; horarios: Horario
           return (
             <div
               key={value}
-              className="flex items-center gap-3 px-3 py-2 border-b last:border-b-0"
+              className="flex items-center gap-3 px-3 py-2.5 border-b last:border-b-0"
               style={{ borderColor: "var(--border)", background: d.activo ? "var(--surface)" : "transparent" }}
             >
-              {/* Toggle día */}
+              {/* Checkbox visible */}
               <button
                 type="button"
                 onClick={() => setDia(value, { activo: !d.activo })}
-                className={`w-8 text-xs font-medium rounded py-0.5 transition-colors ${
+                className="w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 transition-colors"
+                style={
                   d.activo
-                    ? "text-white"
-                    : "text-white/25"
-                }`}
-                style={d.activo ? { color: "var(--accent)" } : {}}
+                    ? { background: "var(--accent)", borderColor: "var(--accent)" }
+                    : { background: "transparent", borderColor: "var(--border)" }
+                }
               >
-                {label}
+                {d.activo && (
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <polyline points="2,5 4,7 8,3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
               </button>
+
+              <span className={`w-8 text-xs font-medium flex-shrink-0 ${d.activo ? "text-white" : "text-white/35"}`}>
+                {label}
+              </span>
 
               {d.activo ? (
                 <>
