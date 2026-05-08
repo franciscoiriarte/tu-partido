@@ -27,6 +27,74 @@ const TMP_DIR = process.env.TMP_DIR || "/tmp/tu-partido";
 const R2_BUCKET = process.env.R2_BUCKET;
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
 
+// ── Generador de slots ────────────────────────────────────────────────────────
+
+function horaASegundos(horaStr) {
+  const [h, m, s] = horaStr.split(":").map(Number);
+  return h * 3600 + m * 60 + (s || 0);
+}
+
+function segundosAHora(seg) {
+  const h = Math.floor(seg / 3600);
+  const m = Math.floor((seg % 3600) / 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
+}
+
+function generarSlots(horaInicio, horaFin, duracionMin) {
+  const slots = [];
+  let actual = horaASegundos(horaInicio);
+  const fin = horaASegundos(horaFin);
+  const dur = duracionMin * 60;
+  while (actual + dur <= fin) {
+    slots.push({ inicio: segundosAHora(actual), fin: segundosAHora(actual + dur) });
+    actual += dur;
+  }
+  return slots;
+}
+
+async function crearTurnosDesdeHorario() {
+  const hoy = new Date().toLocaleDateString("en-CA");
+  const diaSemana = new Date().getDay(); // 0=domingo, 1=lunes...
+
+  const { data: horario } = await supabase
+    .from("horarios")
+    .select("hora_inicio, hora_fin, duracion_min")
+    .eq("cancha_id", CANCHA_ID)
+    .eq("dia_semana", diaSemana)
+    .single();
+
+  if (!horario) {
+    log("📅 Sin horario tipo para hoy — solo se grabarán turnos cargados manualmente");
+    return;
+  }
+
+  const slots = generarSlots(horario.hora_inicio, horario.hora_fin, horario.duracion_min);
+
+  const { data: existentes } = await supabase
+    .from("turnos")
+    .select("hora_inicio")
+    .eq("cancha_id", CANCHA_ID)
+    .eq("fecha", hoy);
+
+  const horasExistentes = new Set((existentes ?? []).map((t) => t.hora_inicio));
+
+  const nuevos = slots
+    .filter((s) => !horasExistentes.has(s.inicio))
+    .map((s) => ({
+      cancha_id: CANCHA_ID,
+      fecha: hoy,
+      hora_inicio: s.inicio,
+      hora_fin: s.fin,
+    }));
+
+  if (nuevos.length > 0) {
+    await supabase.from("turnos").insert(nuevos);
+    log(`📅 Creados ${nuevos.length} turno(s) automáticos desde horario tipo`);
+  } else {
+    log("📅 Turnos del horario tipo ya estaban cargados");
+  }
+}
+
 // ── Estado ────────────────────────────────────────────────────────────────────
 
 const grabaciones = {}; // turnoId → { proceso, filePath }
@@ -187,6 +255,11 @@ if (!RTSP_URL) {
 log(`🚀 Recorder iniciado — Cancha: ${CANCHA_ID}`);
 log(`📷 Fuente de video: ${RTSP_URL}`);
 
-programarTurnos();
+// Crear turnos desde horario tipo y luego programar grabaciones
+crearTurnosDesdeHorario().then(programarTurnos);
+
 // Refrescar cada hora por si el club agrega turnos nuevos
-setInterval(programarTurnos, 60 * 60 * 1000);
+setInterval(async () => {
+  await crearTurnosDesdeHorario();
+  await programarTurnos();
+}, 60 * 60 * 1000);

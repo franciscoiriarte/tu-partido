@@ -1,6 +1,7 @@
 import { createClient } from "@/utils/supabase/server";
 import { redirect } from "next/navigation";
 import TurnosManager from "./TurnosManager";
+import HorarioManager from "./HorarioManager";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -35,6 +36,11 @@ export default async function DashboardPage() {
     a.nombre.localeCompare(b.nombre)
   );
 
+  const canchaIds = canchas.map((c: { id: string }) => c.id);
+  const { data: horarios } = canchaIds.length > 0
+    ? await supabase.from("horarios").select("*").in("cancha_id", canchaIds)
+    : { data: [] };
+
   return (
     <main className="min-h-screen px-4 py-8 max-w-lg mx-auto" style={{ background: "var(--background)" }}>
       <h1 className="text-2xl font-semibold text-white mb-1">
@@ -42,6 +48,7 @@ export default async function DashboardPage() {
       </h1>
       <p className="text-sm text-white/40 mb-8">Gestión de turnos</p>
       <TurnosManager canchas={canchas} />
+      <HorarioManager canchas={canchas} horarios={horarios ?? []} />
       <form action="/auth/signout" method="post" className="mt-12">
         <button type="submit" className="text-sm text-white/40 underline">
           Cerrar sesión
