@@ -59,12 +59,14 @@ function iniciarGrabacion(turnoId, filePath) {
 
   const args =
     RTSP_URL === "avfoundation"
-      ? // Modo test: cámara integrada del Mac
-        ["-f", "avfoundation", "-framerate", "30", "-i", "0:none",
-         "-c:v", "libx264", "-preset", "ultrafast", "-y", filePath]
+      ? // Modo test: cámara + micrófono del Mac
+        ["-f", "avfoundation", "-framerate", "30", "-i", "0:0",
+         "-c:v", "libx264", "-preset", "ultrafast",
+         "-movflags", "+faststart", "-y", filePath]
       : // Modo real: cámara IP via RTSP
         ["-rtsp_transport", "tcp", "-i", RTSP_URL,
-         "-c", "copy", "-y", filePath];
+         "-c:v", "copy", "-c:a", "aac",
+         "-movflags", "+faststart", "-y", filePath];
 
   const proc = spawn("ffmpeg", args, { stdio: "ignore" });
   grabaciones[turnoId] = { proceso: proc, filePath };
