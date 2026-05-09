@@ -97,7 +97,7 @@ async function crearTurnosDesdeHorario() {
 
 // ── Estado ────────────────────────────────────────────────────────────────────
 
-const grabaciones = {}; // turnoId → { proceso, filePath }
+const grabaciones = {}; // turnoId → { proceso, filePath, startTime }
 let timeouts = [];      // para cancelar al refrescar
 
 // ── Utilidades de tiempo ──────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ function iniciarGrabacion(turnoId, filePath) {
          "-movflags", "+faststart", "-y", filePath];
 
   const proc = spawn("ffmpeg", args, { stdio: "ignore" });
-  grabaciones[turnoId] = { proceso: proc, filePath };
+  grabaciones[turnoId] = { proceso: proc, filePath, startTime: Date.now() };
 
   proc.on("close", (code) => {
     if (code !== 0 && grabaciones[turnoId]) {
@@ -148,49 +148,96 @@ function iniciarGrabacion(turnoId, filePath) {
   log(`🎥 Grabando turno ${turnoId} → ${filePath}`);
 }
 
+async function subirR2(key, filePath) {
+  const buffer = fs.readFileSync(filePath);
+  await r2.send(new PutObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: key,
+    Body: buffer,
+    ContentType: "video/mp4",
+  }));
+  return `${R2_PUBLIC_URL}/${key}`;
+}
+
+async function procesarHighlights(turnoId, fullVideoPath, startTime) {
+  const { data: highlights } = await supabase
+    .from("highlights")
+    .select("id, marcado_en")
+    .eq("turno_id", turnoId)
+    .is("clip_url", null);
+
+  if (!highlights || highlights.length === 0) return;
+
+  log(`✂️  Procesando ${highlights.length} highlight(s)…`);
+
+  for (const h of highlights) {
+    const offsetSeg = (new Date(h.marcado_en).getTime() - startTime) / 1000;
+    const desde = Math.max(0, offsetSeg - 30);
+    const clipPath = path.join(TMP_DIR, `highlight-${h.id}.mp4`);
+
+    await new Promise((resolve) => {
+      const proc = spawn("ffmpeg", [
+        "-ss", String(desde),
+        "-i", fullVideoPath,
+        "-t", "35",
+        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        "-y", clipPath,
+      ], { stdio: "ignore" });
+      proc.on("close", resolve);
+    });
+
+    if (!fs.existsSync(clipPath)) {
+      log(`⚠️  No se pudo cortar el highlight ${h.id}`);
+      continue;
+    }
+
+    try {
+      const clipUrl = await subirR2(`highlights/${h.id}.mp4`, clipPath);
+      await supabase.from("highlights").update({ clip_url: clipUrl }).eq("id", h.id);
+      fs.unlinkSync(clipPath);
+      log(`🎬 Highlight ${h.id} subido`);
+    } catch (err) {
+      log(`❌ Error subiendo highlight ${h.id}: ${err.message}`);
+    }
+  }
+}
+
 async function detenerYSubir(turnoId) {
   const rec = grabaciones[turnoId];
   if (!rec) return;
 
-  // Detener ffmpeg limpiamente
   rec.proceso.kill("SIGINT");
+  const { filePath, startTime } = rec;
   delete grabaciones[turnoId];
 
   log(`⏹  Deteniendo grabación del turno ${turnoId}…`);
-  await new Promise((r) => setTimeout(r, 4000)); // esperar cierre del archivo
+  await new Promise((r) => setTimeout(r, 4000));
 
-  if (!fs.existsSync(rec.filePath)) {
-    log(`❌ No se encontró el archivo: ${rec.filePath}`);
+  if (!fs.existsSync(filePath)) {
+    log(`❌ No se encontró el archivo: ${filePath}`);
     return;
   }
 
-  // Subir a R2
+  // Subir video completo
   const key = `turnos/${turnoId}.mp4`;
-  log(`⬆️  Subiendo a R2: ${key}`);
+  log(`⬆️  Subiendo video completo a R2…`);
 
   try {
-    const buffer = fs.readFileSync(rec.filePath);
-    await r2.send(
-      new PutObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key,
-        Body: buffer,
-        ContentType: "video/mp4",
-      })
-    );
+    const videoUrl = await subirR2(key, filePath);
+    await supabase.from("turnos").update({ video_url: videoUrl }).eq("id", turnoId);
+    log(`✅ Turno ${turnoId} disponible: ${videoUrl}`);
   } catch (err) {
     log(`❌ Error subiendo a R2: ${err.message}`);
+    fs.unlinkSync(filePath);
     return;
   }
 
-  // Actualizar Supabase
-  const videoUrl = `${R2_PUBLIC_URL}/${key}`;
-  await supabase.from("turnos").update({ video_url: videoUrl }).eq("id", turnoId);
+  // Procesar highlights antes de borrar el video local
+  await procesarHighlights(turnoId, filePath, startTime);
 
-  // Borrar archivo local
-  fs.unlinkSync(rec.filePath);
-
-  log(`✅ Turno ${turnoId} disponible: ${videoUrl}`);
+  fs.unlinkSync(filePath);
 }
 
 // ── Scheduling ────────────────────────────────────────────────────────────────

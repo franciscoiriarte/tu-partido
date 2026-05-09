@@ -46,10 +46,23 @@ export default async function ResultadosPage({
           .order("hora_inicio")
       : { data: [] };
 
+  const turnoIds = (turnos ?? []).map((t) => t.id);
+
+  const { data: highlights } =
+    turnoIds.length > 0
+      ? await supabase
+          .from("highlights")
+          .select("id, turno_id, clip_url")
+          .in("turno_id", turnoIds)
+          .not("clip_url", "is", null)
+          .order("created_at")
+      : { data: [] };
+
   const resultados = (turnos ?? []).map((t) => {
     const cancha = (canchas ?? []).find((c) => c.id === t.cancha_id);
     const comp = (complejos ?? []).find((co) => co.id === cancha?.complejo_id);
-    return { ...t, cancha_nombre: cancha?.nombre ?? "", complejo_nombre: comp?.nombre ?? "" };
+    const clips = (highlights ?? []).filter((h) => h.turno_id === t.id);
+    return { ...t, cancha_nombre: cancha?.nombre ?? "", complejo_nombre: comp?.nombre ?? "", clips };
   });
 
   return (
@@ -73,7 +86,7 @@ export default async function ResultadosPage({
       )}
 
       {resultados.map((turno) => (
-        <div key={turno.id} className="mb-6 pb-6 border-b" style={{ borderColor: "var(--border)" }}>
+        <div key={turno.id} className="mb-8 pb-8 border-b" style={{ borderColor: "var(--border)" }}>
           <p className="text-white/40 text-sm mb-1">{turno.cancha_nombre}</p>
           <p className="text-white font-medium mb-4">
             {turno.hora_inicio.slice(0, 5)} — {turno.hora_fin.slice(0, 5)}
@@ -85,14 +98,36 @@ export default async function ResultadosPage({
               <a
                 href={turno.video_url}
                 download
-                className="block text-center py-3 text-sm font-semibold"
+                className="block text-center py-3 text-sm font-semibold rounded"
                 style={{ background: "var(--accent)", color: "#fff" }}
               >
-                Descargar video
+                Descargar video completo
               </a>
             </div>
           ) : (
             <p className="text-white/40 text-sm">El video estará disponible en breve.</p>
+          )}
+
+          {/* Highlights */}
+          {turno.clips.length > 0 && (
+            <div className="mt-6">
+              <p className="text-white/40 text-xs uppercase tracking-widest mb-3">
+                Highlights · {turno.clips.length} jugada{turno.clips.length > 1 ? "s" : ""}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {turno.clips.map((clip, i) => (
+                  <div key={clip.id} className="relative rounded overflow-hidden" style={{ background: "var(--surface)" }}>
+                    <video
+                      src={clip.clip_url!}
+                      controls
+                      playsInline
+                      className="w-full aspect-video object-cover"
+                    />
+                    <p className="text-white/40 text-xs text-center py-1">#{i + 1}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       ))}
