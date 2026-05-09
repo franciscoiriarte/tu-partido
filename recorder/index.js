@@ -1,6 +1,7 @@
 require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client } = require("@aws-sdk/client-s3");
+const { Upload } = require("@aws-sdk/lib-storage");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
@@ -129,12 +130,12 @@ function iniciarGrabacion(turnoId, filePath) {
     RTSP_URL === "avfoundation"
       ? // Modo test: cámara + micrófono del Mac
         ["-f", "avfoundation", "-framerate", "30", "-i", "0:0",
-         "-c:v", "libx264", "-preset", "ultrafast",
+         "-c:v", "libx264", "-crf", "28", "-preset", "fast",
          "-movflags", "+faststart", "-y", filePath]
       : // Modo real: cámara IP via RTSP
         ["-rtsp_transport", "tcp", "-i", RTSP_URL,
-         "-c:v", "copy", "-c:a", "aac",
-         "-movflags", "+faststart", "-y", filePath];
+         "-c:v", "libx264", "-crf", "26", "-preset", "fast",
+         "-c:a", "aac", "-movflags", "+faststart", "-y", filePath];
 
   const proc = spawn("ffmpeg", args, { stdio: "ignore" });
   grabaciones[turnoId] = { proceso: proc, filePath, startTime: Date.now() };
@@ -149,13 +150,21 @@ function iniciarGrabacion(turnoId, filePath) {
 }
 
 async function subirR2(key, filePath) {
-  const buffer = fs.readFileSync(filePath);
-  await r2.send(new PutObjectCommand({
-    Bucket: R2_BUCKET,
-    Key: key,
-    Body: buffer,
-    ContentType: "video/mp4",
-  }));
+  const fileStream = fs.createReadStream(filePath);
+  const fileSizeMB = Math.round(fs.statSync(filePath).size / 1024 / 1024);
+  log(`⬆️  Subiendo ${key} (${fileSizeMB} MB)…`);
+
+  const upload = new Upload({
+    client: r2,
+    params: {
+      Bucket: R2_BUCKET,
+      Key: key,
+      Body: fileStream,
+      ContentType: "video/mp4",
+    },
+  });
+
+  await upload.done();
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
