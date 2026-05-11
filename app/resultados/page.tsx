@@ -116,14 +116,24 @@ export default async function ResultadosPage({
               </p>
               <div className="grid grid-cols-2 gap-2">
                 {turno.clips.map((clip, i) => (
-                  <div key={clip.id} className="relative rounded overflow-hidden" style={{ background: "var(--surface)" }}>
+                  <div key={clip.id} className="rounded overflow-hidden" style={{ background: "var(--surface)" }}>
                     <video
                       src={clip.clip_url!}
                       controls
                       playsInline
-                      className="w-full aspect-video object-cover"
+                      className="w-full"
                     />
-                    <p className="text-white/40 text-xs text-center py-1">#{i + 1}</p>
+                    <div className="flex items-center justify-between px-2 py-1">
+                      <p className="text-white/40 text-xs">#{i + 1}</p>
+                      <a
+                        href={clip.clip_url!}
+                        download
+                        className="text-xs font-semibold"
+                        style={{ color: "var(--accent)" }}
+                      >
+                        Descargar
+                      </a>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -129,7 +129,7 @@ function iniciarGrabacion(turnoId, filePath) {
   const args =
     RTSP_URL === "avfoundation"
       ? // Modo test: cámara + micrófono del Mac
-        ["-f", "avfoundation", "-framerate", "30", "-i", "0:0",
+        ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0",
          "-c:v", "libx264", "-crf", "28", "-preset", "fast",
          "-movflags", "+faststart", "-y", filePath]
       : // Modo real: cámara IP via RTSP
