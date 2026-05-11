@@ -96,8 +96,7 @@ export default async function ResultadosPage({
             <div>
               <video src={turno.video_url} controls className="w-full mb-3 rounded" />
               <a
-                href={turno.video_url}
-                download
+                href={`/api/download?url=${encodeURIComponent(turno.video_url)}&filename=partido-${turno.id}.mp4`}
                 className="block text-center py-3 text-sm font-semibold rounded"
                 style={{ background: "var(--accent)", color: "#fff" }}
               >
@@ -126,8 +125,7 @@ export default async function ResultadosPage({
                     <div className="flex items-center justify-between px-2 py-1">
                       <p className="text-white/40 text-xs">#{i + 1}</p>
                       <a
-                        href={clip.clip_url!}
-                        download
+                        href={`/api/download?url=${encodeURIComponent(clip.clip_url!)}&filename=highlight-${i + 1}.mp4`}
                         className="text-xs font-semibold"
                         style={{ color: "var(--accent)" }}
                       >
