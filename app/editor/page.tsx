@@ -34,11 +34,17 @@ function EditorInner() {
   const [playing, setPlaying] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
 
-  // Detectar soporte de canvas captureStream (no disponible en iOS Safari)
-  const supportsCapture =
-    typeof window !== "undefined" &&
-    typeof (HTMLCanvasElement.prototype as unknown as { captureStream?: () => MediaStream }).captureStream === "function" &&
-    typeof MediaRecorder !== "undefined";
+  const [supportsCapture, setSupportsCapture] = useState(false);
+
+  useEffect(() => {
+    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const ok =
+      !isIOS &&
+      typeof MediaRecorder !== "undefined" &&
+      typeof (HTMLCanvasElement.prototype as unknown as { captureStream?: () => MediaStream }).captureStream === "function" &&
+      MediaRecorder.isTypeSupported("video/webm");
+    setSupportsCapture(ok);
+  }, []);
 
   const handleVideoLoaded = () => {
     const v = videoRef.current;
@@ -129,6 +135,7 @@ function EditorInner() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
+    try {
 
     chunksRef.current = [];
     setPhase("recording");
@@ -174,7 +181,12 @@ function EditorInner() {
       setPlaying(false);
       clearInterval(timer);
     };
-  }, [renderFrame]);
+    } catch {
+      // Si falla, caer al modo servidor
+      setPhase("positioning");
+      generarClipServidor();
+    }
+  }, [renderFrame]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const detenerGrabacion = () => {
     recorderRef.current?.stop();
