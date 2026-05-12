@@ -474,6 +474,55 @@ log(`🚀 Recorder iniciado — Cancha: ${CANCHA_ID}`);
 log(`📷 Fuente de video: ${RTSP_URL}`);
 log(`🎨 Assets: ${ASSETS_DIR}`);
 
+// ── Clip jobs (editor vertical) ───────────────────────────────────────────────
+
+async function procesarClipJobs() {
+  const { data: jobs } = await supabase
+    .from("clip_jobs")
+    .select("id, source_url, crop_x_pct")
+    .eq("status", "pending")
+    .order("created_at")
+    .limit(1);
+
+  if (!jobs || jobs.length === 0) return;
+
+  const job = jobs[0];
+  await supabase.from("clip_jobs").update({ status: "processing" }).eq("id", job.id);
+  log(`✂️  Procesando clip vertical ${job.id}…`);
+
+  const tmpInput = path.join(TMP_DIR, `clipjob-${job.id}-in.mp4`);
+  const tmpOutput = path.join(TMP_DIR, `clipjob-${job.id}-out.mp4`);
+
+  try {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+
+    // Descargar video fuente
+    const res = await fetch(job.source_url);
+    const buffer = await res.arrayBuffer();
+    fs.writeFileSync(tmpInput, Buffer.from(buffer));
+
+    // Recortar y escalar a vertical 9:16
+    await ffmpegRun([
+      "-i", tmpInput,
+      "-vf", `crop=ih*9/16:ih:iw*${job.crop_x_pct}:0,scale=1080:1920`,
+      "-c:v", "libx264", "-preset", "fast", "-crf", "26",
+      "-c:a", "aac", "-movflags", "+faststart",
+      "-y", tmpOutput,
+    ]);
+
+    const resultUrl = await subirR2(`clips/${job.id}.mp4`, tmpOutput);
+
+    await supabase.from("clip_jobs").update({ status: "done", result_url: resultUrl }).eq("id", job.id);
+    log(`✅ Clip vertical listo: ${resultUrl}`);
+  } catch (err) {
+    await supabase.from("clip_jobs").update({ status: "error" }).eq("id", job.id);
+    log(`❌ Error en clip job ${job.id}: ${err.message}`);
+  } finally {
+    if (fs.existsSync(tmpInput)) fs.unlinkSync(tmpInput);
+    if (fs.existsSync(tmpOutput)) fs.unlinkSync(tmpOutput);
+  }
+}
+
 // Crear turnos desde horario tipo y luego programar grabaciones
 crearTurnosDesdeHorario().then(programarTurnos);
 
@@ -482,3 +531,6 @@ setInterval(async () => {
   await crearTurnosDesdeHorario();
   await programarTurnos();
 }, 60 * 60 * 1000);
+
+// Procesar clip jobs cada 10 segundos
+setInterval(procesarClipJobs, 10 * 1000);

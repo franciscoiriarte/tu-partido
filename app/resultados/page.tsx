@@ -122,15 +122,24 @@ export default async function ResultadosPage({
                       playsInline
                       className="w-full"
                     />
-                    <div className="flex items-center justify-between px-2 py-1">
+                    <div className="flex items-center justify-between px-2 py-2 gap-2">
                       <p className="text-white/40 text-xs">#{i + 1}</p>
-                      <a
-                        href={`/api/download?url=${encodeURIComponent(clip.clip_url!)}&filename=highlight-${i + 1}.mp4`}
-                        className="text-xs font-semibold"
-                        style={{ color: "var(--accent)" }}
-                      >
-                        Descargar
-                      </a>
+                      <div className="flex gap-2">
+                        <a
+                          href={`/editor?url=${encodeURIComponent(clip.clip_url!)}`}
+                          className="text-xs font-semibold px-2 py-1 rounded"
+                          style={{ background: "var(--surface)", color: "white", border: "1px solid var(--border)" }}
+                        >
+                          Editar
+                        </a>
+                        <a
+                          href={`/api/download?url=${encodeURIComponent(clip.clip_url!)}&filename=highlight-${i + 1}.mp4`}
+                          className="text-xs font-semibold"
+                          style={{ color: "var(--accent)" }}
+                        >
+                          Descargar
+                        </a>
+                      </div>
                     </div>
                   </div>
                 ))}
