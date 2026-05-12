@@ -12,9 +12,12 @@ function EditorInner() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // cropXPct: posición del borde izquierdo del recuadro, como fracción del ancho del video
   const [cropXPct, setCropXPct] = useState(0.34);
-  const [cropWidthPct, setCropWidthPct] = useState(0.316); // 9:16 del ancho total
+  const [cropWidthPct, setCropWidthPct] = useState(0.316);
+
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
 
   const isDragging = useRef(false);
   const dragStartX = useRef(0);
@@ -26,18 +29,40 @@ function EditorInner() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleVideoLoaded = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    const cropW = (video.videoHeight * 9) / 16 / video.videoWidth;
+    const v = videoRef.current;
+    if (!v) return;
+    const cropW = (v.videoHeight * 9) / 16 / v.videoWidth;
     setCropWidthPct(cropW);
     setCropXPct((1 - cropW) / 2);
+    setDuration(v.duration);
   };
 
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) { v.play(); setPlaying(true); }
+    else { v.pause(); setPlaying(false); }
+  };
+
+  const onTimeUpdate = () => {
+    if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+  };
+
+  const onSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const t = Number(e.target.value);
+    if (videoRef.current) videoRef.current.currentTime = t;
+    setCurrentTime(t);
+  };
+
+  const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+  // Drag handlers — solo sobre el recuadro, no el video
   const onDragStart = (e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
     isDragging.current = true;
     dragStartX.current = "touches" in e ? e.touches[0].clientX : e.clientX;
     dragStartCropX.current = cropXPct;
-    e.preventDefault();
   };
 
   const onDragMove = useCallback(
@@ -46,8 +71,8 @@ function EditorInner() {
       const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
       const containerW = containerRef.current.getBoundingClientRect().width;
       const delta = (clientX - dragStartX.current) / containerW;
-      const newX = Math.max(0, Math.min(1 - cropWidthPct, dragStartCropX.current + delta));
-      setCropXPct(newX);
+      setCropXPct((prev) => Math.max(0, Math.min(1 - cropWidthPct, prev + delta)));
+      dragStartX.current = clientX;
     },
     [cropWidthPct]
   );
@@ -67,7 +92,7 @@ function EditorInner() {
     };
   }, [onDragMove, onDragEnd]);
 
-  // Polling del estado del job
+  // Polling del job
   useEffect(() => {
     if (!jobId || status !== "waiting") return;
     const interval = setInterval(async () => {
@@ -76,11 +101,9 @@ function EditorInner() {
       if (data.status === "done") {
         setStatus("done");
         setResultUrl(data.result_url);
-        clearInterval(interval);
       } else if (data.status === "error") {
         setStatus("error");
-        setErrorMsg("Error procesando el clip");
-        clearInterval(interval);
+        setErrorMsg("Error procesando el clip. Intentá de nuevo.");
       }
     }, 3000);
     return () => clearInterval(interval);
@@ -123,53 +146,71 @@ function EditorInner() {
     <main className="min-h-screen flex flex-col items-center px-4 py-6" style={{ background: "var(--background)" }}>
       <div className="w-full max-w-lg">
         <Link href="javascript:history.back()" className="text-white/40 text-sm underline mb-4 block">← Volver</Link>
-        <p className="text-white/40 text-xs uppercase tracking-widest mb-4 text-center">Editor de clip vertical</p>
+        <p className="text-white/40 text-xs uppercase tracking-widest mb-3 text-center">Editor de clip vertical</p>
 
         {status !== "done" && (
           <>
-            {/* Video con overlay de recuadro */}
-            <div
-              ref={containerRef}
-              className="relative w-full rounded overflow-hidden select-none"
-              style={{ cursor: "ew-resize", touchAction: "none" }}
-            >
+            {/* Video SIN controles nativos — el overlay maneja el drag */}
+            <div ref={containerRef} className="relative w-full rounded overflow-hidden bg-black">
               <video
                 ref={videoRef}
                 src={sourceUrl}
-                controls
+                playsInline
                 onLoadedMetadata={handleVideoLoaded}
-                className="w-full block"
+                onTimeUpdate={onTimeUpdate}
+                onEnded={() => setPlaying(false)}
+                className="w-full block pointer-events-none"
               />
 
               {/* Zona oscura izquierda */}
               <div
                 className="absolute inset-y-0 left-0 pointer-events-none"
-                style={{ width: `${cropXPct * 100}%`, background: "rgba(0,0,0,0.55)" }}
+                style={{ width: `${cropXPct * 100}%`, background: "rgba(0,0,0,0.6)" }}
               />
-
               {/* Zona oscura derecha */}
               <div
                 className="absolute inset-y-0 right-0 pointer-events-none"
-                style={{ width: `${(1 - cropXPct - cropWidthPct) * 100}%`, background: "rgba(0,0,0,0.55)" }}
+                style={{ width: `${(1 - cropXPct - cropWidthPct) * 100}%`, background: "rgba(0,0,0,0.6)" }}
               />
 
-              {/* Recuadro arrastrable */}
+              {/* Recuadro arrastrable — cubre todo el alto */}
               <div
                 className="absolute inset-y-0 border-2 border-white"
-                style={{ left: `${cropXPct * 100}%`, width: `${cropWidthPct * 100}%` }}
+                style={{ left: `${cropXPct * 100}%`, width: `${cropWidthPct * 100}%`, cursor: "ew-resize", touchAction: "none" }}
                 onMouseDown={onDragStart}
                 onTouchStart={onDragStart}
               >
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-black/40 rounded-full px-2 py-1">
-                    <span className="text-white text-xs font-bold">↔</span>
+                  <div className="bg-black/50 rounded-full px-3 py-1">
+                    <span className="text-white text-sm font-bold select-none">↔</span>
                   </div>
                 </div>
               </div>
             </div>
 
-            <p className="text-white/40 text-xs text-center mt-2 mb-6">
-              Arrastrá el recuadro para elegir el ángulo
+            {/* Controles de video propios */}
+            <div className="flex items-center gap-3 mt-2 mb-1">
+              <button
+                onClick={togglePlay}
+                className="text-white text-lg w-8 h-8 flex items-center justify-center rounded-full flex-shrink-0"
+                style={{ background: "var(--surface)" }}
+              >
+                {playing ? "⏸" : "▶"}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={duration || 1}
+                step={0.1}
+                value={currentTime}
+                onChange={onSeek}
+                className="flex-1 accent-white"
+              />
+              <span className="text-white/40 text-xs flex-shrink-0">{fmt(currentTime)} / {fmt(duration)}</span>
+            </div>
+
+            <p className="text-white/40 text-xs text-center mb-5">
+              Reproducí el video, posicioná el recuadro donde está la acción y tocá Generar
             </p>
 
             <button
@@ -178,16 +219,17 @@ function EditorInner() {
               className="w-full py-4 rounded-xl text-white text-lg font-bold disabled:opacity-60"
               style={{ background: "var(--accent)" }}
             >
-              {status === "waiting" ? "Generando clip… (~20 seg)" : "Generar clip vertical"}
+              {status === "waiting" ? "Generando… (~20 seg)" : "Generar clip vertical"}
             </button>
 
             {status === "waiting" && (
-              <div className="mt-4 h-1 rounded-full overflow-hidden" style={{ background: "var(--surface)" }}>
-                <div
-                  className="h-full rounded-full animate-pulse"
-                  style={{ width: "100%", background: "var(--accent)" }}
-                />
+              <div className="mt-3 h-1 rounded-full overflow-hidden" style={{ background: "var(--surface)" }}>
+                <div className="h-full rounded-full animate-pulse" style={{ width: "100%", background: "var(--accent)" }} />
               </div>
+            )}
+
+            {status === "error" && (
+              <p className="text-red-400 text-sm text-center mt-3">{errorMsg}</p>
             )}
           </>
         )}
@@ -195,13 +237,7 @@ function EditorInner() {
         {status === "done" && resultUrl && (
           <div className="space-y-3">
             <p className="text-white/40 text-xs uppercase tracking-widest text-center mb-4">Tu clip está listo</p>
-            <video
-              src={resultUrl}
-              controls
-              playsInline
-              className="w-full rounded mx-auto"
-              style={{ maxHeight: "65vh" }}
-            />
+            <video src={resultUrl} controls playsInline className="w-full rounded mx-auto" style={{ maxHeight: "65vh" }} />
             <a
               href={`/api/download?url=${encodeURIComponent(resultUrl)}&filename=highlight-vertical.mp4`}
               className="block text-center py-4 rounded-xl text-white font-bold"
@@ -210,11 +246,7 @@ function EditorInner() {
               Descargar
             </a>
             {"share" in navigator && (
-              <button
-                onClick={compartir}
-                className="w-full py-4 rounded-xl text-white font-bold"
-                style={{ background: "#2563eb" }}
-              >
+              <button onClick={compartir} className="w-full py-4 rounded-xl text-white font-bold" style={{ background: "#2563eb" }}>
                 Compartir en redes
               </button>
             )}
@@ -226,10 +258,6 @@ function EditorInner() {
               Editar de nuevo
             </button>
           </div>
-        )}
-
-        {status === "error" && (
-          <p className="text-red-400 text-sm text-center mt-4">{errorMsg}</p>
         )}
       </div>
     </main>
