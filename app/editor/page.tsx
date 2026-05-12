@@ -1,39 +1,45 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { Suspense } from "react";
-import Link from "next/link";
+
+type Phase = "positioning" | "recording" | "done";
 
 function EditorInner() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const sourceUrl = searchParams.get("url") ?? "";
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const cropXRef = useRef(0.34); // ref para usar en el loop de canvas
 
   const [cropXPct, setCropXPct] = useState(0.34);
   const [cropWidthPct, setCropWidthPct] = useState(0.316);
-
-  const [playing, setPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [phase, setPhase] = useState<Phase>("positioning");
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [recordingTime, setRecordingTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [playing, setPlaying] = useState(false);
 
   const isDragging = useRef(false);
   const dragStartX = useRef(0);
   const dragStartCropX = useRef(0);
-
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<"idle" | "waiting" | "done" | "error">("idle");
-  const [resultUrl, setResultUrl] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleVideoLoaded = () => {
     const v = videoRef.current;
     if (!v) return;
     const cropW = (v.videoHeight * 9) / 16 / v.videoWidth;
     setCropWidthPct(cropW);
-    setCropXPct((1 - cropW) / 2);
+    const initial = (1 - cropW) / 2;
+    setCropXPct(initial);
+    cropXRef.current = initial;
     setDuration(v.duration);
   };
 
@@ -44,35 +50,36 @@ function EditorInner() {
     else { v.pause(); setPlaying(false); }
   };
 
-  const onTimeUpdate = () => {
-    if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
-  };
-
   const onSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const t = Number(e.target.value);
     if (videoRef.current) videoRef.current.currentTime = t;
     setCurrentTime(t);
   };
 
-  const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const fmt = (s: number) =>
+    `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
-  // Drag handlers — solo sobre el recuadro, no el video
+  // ── Drag ──────────────────────────────────────────────────────────────────
+
   const onDragStart = (e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
     isDragging.current = true;
     dragStartX.current = "touches" in e ? e.touches[0].clientX : e.clientX;
-    dragStartCropX.current = cropXPct;
+    dragStartCropX.current = cropXRef.current;
   };
 
   const onDragMove = useCallback(
     (e: MouseEvent | TouchEvent) => {
       if (!isDragging.current || !containerRef.current) return;
       const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
-      const containerW = containerRef.current.getBoundingClientRect().width;
-      const delta = (clientX - dragStartX.current) / containerW;
-      setCropXPct((prev) => Math.max(0, Math.min(1 - cropWidthPct, prev + delta)));
+      const w = containerRef.current.getBoundingClientRect().width;
+      const delta = (clientX - dragStartX.current) / w;
+      const newX = Math.max(0, Math.min(1 - cropWidthPct, dragStartCropX.current + delta));
+      cropXRef.current = newX;
+      setCropXPct(newX);
       dragStartX.current = clientX;
+      dragStartCropX.current = newX;
     },
     [cropWidthPct]
   );
@@ -92,39 +99,74 @@ function EditorInner() {
     };
   }, [onDragMove, onDragEnd]);
 
-  // Polling del job
-  useEffect(() => {
-    if (!jobId || status !== "waiting") return;
-    const interval = setInterval(async () => {
-      const res = await fetch(`/api/clip-vertical?job_id=${jobId}`);
-      const data = await res.json();
-      if (data.status === "done") {
-        setStatus("done");
-        setResultUrl(data.result_url);
-      } else if (data.status === "error") {
-        setStatus("error");
-        setErrorMsg("Error procesando el clip. Intentá de nuevo.");
-      }
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [jobId, status]);
+  // ── Canvas recording ──────────────────────────────────────────────────────
 
-  const generarClip = async () => {
-    setStatus("waiting");
-    setErrorMsg(null);
-    try {
-      const res = await fetch("/api/clip-vertical", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_url: sourceUrl, crop_x_pct: cropXPct }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setJobId(data.job_id);
-    } catch (err: unknown) {
-      setStatus("error");
-      setErrorMsg(err instanceof Error ? err.message : "Error");
-    }
+  const renderFrame = useCallback(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const srcX = video.videoWidth * cropXRef.current;
+    const srcW = video.videoWidth * cropWidthPct;
+    ctx.drawImage(video, srcX, 0, srcW, video.videoHeight, 0, 0, canvas.width, canvas.height);
+    animFrameRef.current = requestAnimationFrame(renderFrame);
+  }, [cropWidthPct]);
+
+  const iniciarGrabacion = useCallback(async () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    chunksRef.current = [];
+    setPhase("recording");
+    setRecordingTime(0);
+
+    canvas.width = 1080;
+    canvas.height = 1920;
+
+    const stream = canvas.captureStream(30);
+
+    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+      ? "video/webm;codecs=vp9"
+      : MediaRecorder.isTypeSupported("video/mp4")
+      ? "video/mp4"
+      : "video/webm";
+
+    const recorder = new MediaRecorder(stream, { mimeType });
+    recorderRef.current = recorder;
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+
+    recorder.onstop = () => {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      const blob = new Blob(chunksRef.current, { type: mimeType });
+      setResultUrl(URL.createObjectURL(blob));
+      setPhase("done");
+    };
+
+    recorder.start(100);
+    video.currentTime = 0;
+    await video.play();
+    setPlaying(true);
+    animFrameRef.current = requestAnimationFrame(renderFrame);
+
+    const timer = setInterval(() => setRecordingTime((t) => t + 1), 1000);
+
+    video.onended = () => {
+      recorder.stop();
+      setPlaying(false);
+      clearInterval(timer);
+    };
+  }, [renderFrame]);
+
+  const detenerGrabacion = () => {
+    recorderRef.current?.stop();
+    videoRef.current?.pause();
+    setPlaying(false);
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
   };
 
   const compartir = async () => {
@@ -145,117 +187,133 @@ function EditorInner() {
   return (
     <main className="min-h-screen flex flex-col items-center px-4 py-6" style={{ background: "var(--background)" }}>
       <div className="w-full max-w-lg">
-        <Link href="javascript:history.back()" className="text-white/40 text-sm underline mb-4 block">← Volver</Link>
-        <p className="text-white/40 text-xs uppercase tracking-widest mb-3 text-center">Editor de clip vertical</p>
+        <button onClick={() => router.back()} className="text-white/40 text-sm underline mb-4 block text-left">
+          ← Volver
+        </button>
+        <p className="text-white/40 text-xs uppercase tracking-widest mb-3 text-center">
+          Editor de clip vertical
+        </p>
 
-        {status !== "done" && (
+        {/* Canvas oculto donde se dibuja el recorte */}
+        <canvas ref={canvasRef} className="hidden" />
+
+        {(phase === "positioning" || phase === "recording") && (
           <>
-            {/* Video SIN controles nativos — el overlay maneja el drag */}
+            {/* Video con overlay */}
             <div ref={containerRef} className="relative w-full rounded overflow-hidden bg-black">
               <video
                 ref={videoRef}
                 src={sourceUrl}
                 playsInline
                 onLoadedMetadata={handleVideoLoaded}
-                onTimeUpdate={onTimeUpdate}
+                onTimeUpdate={() => { if (videoRef.current) setCurrentTime(videoRef.current.currentTime); }}
                 onEnded={() => setPlaying(false)}
                 className="w-full block pointer-events-none"
               />
 
-              {/* Zona oscura izquierda */}
-              <div
-                className="absolute inset-y-0 left-0 pointer-events-none"
-                style={{ width: `${cropXPct * 100}%`, background: "rgba(0,0,0,0.6)" }}
-              />
-              {/* Zona oscura derecha */}
-              <div
-                className="absolute inset-y-0 right-0 pointer-events-none"
-                style={{ width: `${(1 - cropXPct - cropWidthPct) * 100}%`, background: "rgba(0,0,0,0.6)" }}
-              />
+              {/* Zonas oscuras */}
+              <div className="absolute inset-y-0 left-0 pointer-events-none" style={{ width: `${cropXPct * 100}%`, background: "rgba(0,0,0,0.6)" }} />
+              <div className="absolute inset-y-0 right-0 pointer-events-none" style={{ width: `${(1 - cropXPct - cropWidthPct) * 100}%`, background: "rgba(0,0,0,0.6)" }} />
 
-              {/* Recuadro arrastrable — cubre todo el alto */}
+              {/* Recuadro arrastrable */}
               <div
                 className="absolute inset-y-0 border-2 border-white"
-                style={{ left: `${cropXPct * 100}%`, width: `${cropWidthPct * 100}%`, cursor: "ew-resize", touchAction: "none" }}
+                style={{ left: `${cropXPct * 100}%`, width: `${cropWidthPct * 100}%`, touchAction: "none", cursor: "ew-resize" }}
                 onMouseDown={onDragStart}
                 onTouchStart={onDragStart}
               >
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-black/50 rounded-full px-3 py-1">
-                    <span className="text-white text-sm font-bold select-none">↔</span>
+                {phase === "recording" ? (
+                  <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-red-500 rounded px-2 py-0.5 whitespace-nowrap">
+                    <span className="text-white text-xs font-bold">● {fmt(recordingTime)}</span>
                   </div>
-                </div>
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="bg-black/50 rounded-full px-3 py-1">
+                      <span className="text-white text-sm font-bold select-none">↔</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Controles de video propios */}
-            <div className="flex items-center gap-3 mt-2 mb-1">
-              <button
-                onClick={togglePlay}
-                className="text-white text-lg w-8 h-8 flex items-center justify-center rounded-full flex-shrink-0"
-                style={{ background: "var(--surface)" }}
-              >
-                {playing ? "⏸" : "▶"}
-              </button>
-              <input
-                type="range"
-                min={0}
-                max={duration || 1}
-                step={0.1}
-                value={currentTime}
-                onChange={onSeek}
-                className="flex-1 accent-white"
-              />
-              <span className="text-white/40 text-xs flex-shrink-0">{fmt(currentTime)} / {fmt(duration)}</span>
-            </div>
-
-            <p className="text-white/40 text-xs text-center mb-5">
-              Reproducí el video, posicioná el recuadro donde está la acción y tocá Generar
-            </p>
-
-            <button
-              onClick={generarClip}
-              disabled={status === "waiting"}
-              className="w-full py-4 rounded-xl text-white text-lg font-bold disabled:opacity-60"
-              style={{ background: "var(--accent)" }}
-            >
-              {status === "waiting" ? "Generando… (~20 seg)" : "Generar clip vertical"}
-            </button>
-
-            {status === "waiting" && (
-              <div className="mt-3 h-1 rounded-full overflow-hidden" style={{ background: "var(--surface)" }}>
-                <div className="h-full rounded-full animate-pulse" style={{ width: "100%", background: "var(--accent)" }} />
+            {/* Controles — solo en modo posicionamiento */}
+            {phase === "positioning" && (
+              <div className="flex items-center gap-3 mt-2 mb-1">
+                <button
+                  onClick={togglePlay}
+                  className="text-white w-8 h-8 flex items-center justify-center rounded-full flex-shrink-0"
+                  style={{ background: "var(--surface)" }}
+                >
+                  {playing ? "⏸" : "▶"}
+                </button>
+                <input type="range" min={0} max={duration || 1} step={0.1} value={currentTime} onChange={onSeek} className="flex-1 accent-white" />
+                <span className="text-white/40 text-xs flex-shrink-0">{fmt(currentTime)} / {fmt(duration)}</span>
               </div>
             )}
 
-            {status === "error" && (
-              <p className="text-red-400 text-sm text-center mt-3">{errorMsg}</p>
+            <p className="text-white/40 text-xs text-center mt-2 mb-5">
+              {phase === "positioning"
+                ? "Posicioná el recuadro y tocá Grabar. Podés moverlo mientras graba."
+                : "Mové el recuadro para seguir la jugada…"}
+            </p>
+
+            {phase === "positioning" && (
+              <button
+                onClick={iniciarGrabacion}
+                className="w-full py-4 rounded-xl text-white text-lg font-bold"
+                style={{ background: "var(--accent)" }}
+              >
+                ● Grabar clip
+              </button>
+            )}
+
+            {phase === "recording" && (
+              <button
+                onClick={detenerGrabacion}
+                className="w-full py-4 rounded-xl text-white text-lg font-bold"
+                style={{ background: "#dc2626" }}
+              >
+                ■ Detener y guardar
+              </button>
             )}
           </>
         )}
 
-        {status === "done" && resultUrl && (
+        {phase === "done" && resultUrl && (
           <div className="space-y-3">
-            <p className="text-white/40 text-xs uppercase tracking-widest text-center mb-4">Tu clip está listo</p>
-            <video src={resultUrl} controls playsInline className="w-full rounded mx-auto" style={{ maxHeight: "65vh" }} />
+            <p className="text-white/40 text-xs uppercase tracking-widest text-center mb-4">
+              Tu clip está listo
+            </p>
+            <video
+              src={resultUrl}
+              controls
+              playsInline
+              className="w-full rounded mx-auto"
+              style={{ maxHeight: "65vh" }}
+            />
             <a
-              href={`/api/download?url=${encodeURIComponent(resultUrl)}&filename=highlight-vertical.mp4`}
+              href={resultUrl}
+              download="highlight-vertical.mp4"
               className="block text-center py-4 rounded-xl text-white font-bold"
               style={{ background: "var(--accent)" }}
             >
               Descargar
             </a>
             {"share" in navigator && (
-              <button onClick={compartir} className="w-full py-4 rounded-xl text-white font-bold" style={{ background: "#2563eb" }}>
+              <button
+                onClick={compartir}
+                className="w-full py-4 rounded-xl text-white font-bold"
+                style={{ background: "#2563eb" }}
+              >
                 Compartir en redes
               </button>
             )}
             <button
-              onClick={() => { setStatus("idle"); setResultUrl(null); setJobId(null); }}
+              onClick={() => { setPhase("positioning"); setResultUrl(null); }}
               className="w-full py-3 rounded-xl text-sm text-white"
               style={{ background: "var(--surface)" }}
             >
-              Editar de nuevo
+              Grabar de nuevo
             </button>
           </div>
         )}
