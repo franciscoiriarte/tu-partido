@@ -27,6 +27,24 @@ function EditorInner() {
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [videoSrc, setVideoSrc] = useState<string>("");
+  const [loadingVideo, setLoadingVideo] = useState(true);
+
+  // Descargar video como blob para evitar CORS en canvas
+  useEffect(() => {
+    if (!sourceUrl) return;
+    setLoadingVideo(true);
+    fetch(sourceUrl)
+      .then((r) => r.blob())
+      .then((blob) => {
+        setVideoSrc(URL.createObjectURL(blob));
+        setLoadingVideo(false);
+      })
+      .catch(() => {
+        setVideoSrc(sourceUrl);
+        setLoadingVideo(false);
+      });
+  }, [sourceUrl]);
 
   const isDragging = useRef(false);
   const dragStartX = useRef(0);
@@ -197,13 +215,19 @@ function EditorInner() {
         {/* Canvas oculto donde se dibuja el recorte */}
         <canvas ref={canvasRef} className="hidden" />
 
-        {(phase === "positioning" || phase === "recording") && (
+        {loadingVideo && (
+          <div className="w-full aspect-video rounded flex items-center justify-center" style={{ background: "var(--surface)" }}>
+            <p className="text-white/40 text-sm">Cargando video…</p>
+          </div>
+        )}
+
+        {!loadingVideo && (phase === "positioning" || phase === "recording") && (
           <>
             {/* Video con overlay */}
             <div ref={containerRef} className="relative w-full rounded overflow-hidden bg-black">
               <video
                 ref={videoRef}
-                src={sourceUrl}
+                src={videoSrc}
                 playsInline
                 onLoadedMetadata={handleVideoLoaded}
                 onTimeUpdate={() => { if (videoRef.current) setCurrentTime(videoRef.current.currentTime); }}
