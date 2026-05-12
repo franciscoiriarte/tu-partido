@@ -27,6 +27,8 @@ const RTSP_URL = process.env.RTSP_URL;
 const TMP_DIR = process.env.TMP_DIR || "/tmp/tu-partido";
 const R2_BUCKET = process.env.R2_BUCKET;
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
+const ASSETS_DIR = process.env.ASSETS_DIR || path.join(__dirname, "assets");
+const YOUTUBE_STREAM_KEY = process.env.YOUTUBE_STREAM_KEY || "";
 
 // ── Generador de slots ────────────────────────────────────────────────────────
 
@@ -121,21 +123,85 @@ function log(msg) {
   console.log(`[${hora}] ${msg}`);
 }
 
+// ── Marcador en vivo ──────────────────────────────────────────────────────────
+
+const SCORE_FILE = path.join(TMP_DIR, "score.txt");
+let pollingMarcador = null;
+
+function formatearMarcador(m) {
+  const sets = (m.sets ?? [])
+    .slice(0, -1)
+    .map((s) => `${s.a}-${s.b}`)
+    .join("  ");
+  const setActual = (m.sets ?? []).at(-1);
+  const juegoActual = setActual ? `${setActual.a}-${setActual.b}` : "";
+  const puntos = `${m.puntos_a ?? "0"} - ${m.puntos_b ?? "0"}`;
+  const nombres = `${m.equipo_a ?? "A"}  vs  ${m.equipo_b ?? "B"}`;
+  return `${nombres}    ${sets}  [${juegoActual}]  ${puntos}`;
+}
+
+async function actualizarScoreFile(turnoId) {
+  try {
+    const { data } = await supabase
+      .from("marcadores")
+      .select("*")
+      .eq("turno_id", turnoId)
+      .single();
+    if (data) {
+      fs.mkdirSync(TMP_DIR, { recursive: true });
+      fs.writeFileSync(SCORE_FILE, formatearMarcador(data));
+    }
+  } catch (_) {}
+}
+
+function iniciarPollingMarcador(turnoId) {
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+  fs.writeFileSync(SCORE_FILE, "");
+  pollingMarcador = setInterval(() => actualizarScoreFile(turnoId), 5000);
+}
+
+function detenerPollingMarcador() {
+  if (pollingMarcador) {
+    clearInterval(pollingMarcador);
+    pollingMarcador = null;
+  }
+}
+
 // ── Grabación ─────────────────────────────────────────────────────────────────
 
 function iniciarGrabacion(turnoId, filePath) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 
+  const ytUrl = YOUTUBE_STREAM_KEY
+    ? `rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}`
+    : null;
+
+  // Overlay del marcador (solo cuando se transmite a YouTube)
+  const scoreFilter = ytUrl
+    ? ["-vf", `drawtext=textfile=${SCORE_FILE}:reload=1:fontcolor=white:fontsize=22:box=1:boxcolor=black@0.65:boxborderw=8:x=10:y=10`]
+    : [];
+
+  // Salida: solo archivo local, o archivo + YouTube en paralelo con tee
+  const output = ytUrl
+    ? ["-f", "tee", `[f=mp4:movflags=+faststart]${filePath}|[f=flv]${ytUrl}`]
+    : ["-movflags", "+faststart", "-y", filePath];
+
   const args =
     RTSP_URL === "avfoundation"
       ? // Modo test: cámara + micrófono del Mac
         ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0",
-         "-c:v", "libx264", "-crf", "28", "-preset", "fast",
-         "-movflags", "+faststart", "-y", filePath]
+         "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
+         "-pix_fmt", "yuv420p", "-g", "60",
+         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+         ...scoreFilter, ...output]
       : // Modo real: cámara IP via RTSP
         ["-rtsp_transport", "tcp", "-i", RTSP_URL,
-         "-c:v", "libx264", "-crf", "26", "-preset", "fast",
-         "-c:a", "aac", "-movflags", "+faststart", "-y", filePath];
+         "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
+         "-pix_fmt", "yuv420p", "-g", "60",
+         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+         ...scoreFilter, ...output];
+
+  iniciarPollingMarcador(turnoId);
 
   const proc = spawn("ffmpeg", args, { stdio: "ignore" });
   grabaciones[turnoId] = { proceso: proc, filePath, startTime: Date.now() };
@@ -146,7 +212,11 @@ function iniciarGrabacion(turnoId, filePath) {
     }
   });
 
-  log(`🎥 Grabando turno ${turnoId} → ${filePath}`);
+  if (ytUrl) {
+    log(`🎥 Grabando turno ${turnoId} + transmitiendo en vivo a YouTube`);
+  } else {
+    log(`🎥 Grabando turno ${turnoId} → ${filePath}`);
+  }
 }
 
 async function subirR2(key, filePath) {
@@ -168,6 +238,91 @@ async function subirR2(key, filePath) {
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
+// ── Branding (intro, zócalo, outro) ──────────────────────────────────────────
+
+function ffmpegRun(args) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffmpeg", args, { stdio: "ignore" });
+    proc.on("close", (code) => {
+      if (code !== 0) reject(new Error(`ffmpeg salió con código ${code}`));
+      else resolve();
+    });
+  });
+}
+
+async function aplicarZocalo(inputPath, outputPath) {
+  const zocaloPath = path.join(ASSETS_DIR, "zocalo.png");
+  if (!fs.existsSync(zocaloPath)) {
+    fs.renameSync(inputPath, outputPath);
+    return;
+  }
+  log("🎨 Aplicando zócalo…");
+  await ffmpegRun([
+    "-i", inputPath,
+    "-i", zocaloPath,
+    "-filter_complex", "[0:v][1:v]overlay=x=0:y=H-h[v]",
+    "-map", "[v]", "-map", "0:a?",
+    "-c:v", "libx264", "-crf", "26", "-preset", "fast",
+    "-c:a", "aac", "-movflags", "+faststart",
+    "-y", outputPath,
+  ]);
+  fs.unlinkSync(inputPath);
+}
+
+async function agregarIntroOutro(inputPath, outputPath) {
+  const introPath = path.join(ASSETS_DIR, "intro.mp4");
+  const outroPath = path.join(ASSETS_DIR, "outro.mp4");
+  const hasIntro = fs.existsSync(introPath);
+  const hasOutro = fs.existsSync(outroPath);
+
+  if (!hasIntro && !hasOutro) {
+    fs.renameSync(inputPath, outputPath);
+    return;
+  }
+
+  log("🎬 Agregando intro/outro…");
+  const listPath = inputPath.replace(".mp4", "_list.txt");
+  const lines = [];
+  if (hasIntro) lines.push(`file '${introPath}'`);
+  lines.push(`file '${inputPath}'`);
+  if (hasOutro) lines.push(`file '${outroPath}'`);
+  fs.writeFileSync(listPath, lines.join("\n"));
+
+  await ffmpegRun([
+    "-f", "concat", "-safe", "0",
+    "-i", listPath,
+    "-c:v", "libx264", "-crf", "26", "-preset", "fast",
+    "-c:a", "aac", "-movflags", "+faststart",
+    "-y", outputPath,
+  ]);
+
+  fs.unlinkSync(inputPath);
+  fs.unlinkSync(listPath);
+}
+
+async function procesarBranding(rawPath) {
+  const zocaloPath = path.join(ASSETS_DIR, "zocalo.png");
+  const introPath = path.join(ASSETS_DIR, "intro.mp4");
+  const outroPath = path.join(ASSETS_DIR, "outro.mp4");
+
+  const sinBranding =
+    !fs.existsSync(zocaloPath) &&
+    !fs.existsSync(introPath) &&
+    !fs.existsSync(outroPath);
+
+  if (sinBranding) return rawPath;
+
+  const brandedPath = rawPath.replace(".mp4", "_final.mp4");
+  const tempPath = rawPath.replace(".mp4", "_zocalo.mp4");
+
+  await aplicarZocalo(rawPath, tempPath);
+  await agregarIntroOutro(tempPath, brandedPath);
+
+  return brandedPath;
+}
+
+// ── Highlights ────────────────────────────────────────────────────────────────
+
 async function procesarHighlights(turnoId, fullVideoPath, startTime) {
   const { data: highlights } = await supabase
     .from("highlights")
@@ -182,27 +337,25 @@ async function procesarHighlights(turnoId, fullVideoPath, startTime) {
   for (const h of highlights) {
     const offsetSeg = (new Date(h.marcado_en).getTime() - startTime) / 1000;
     const desde = Math.max(0, offsetSeg - 30);
-    const clipPath = path.join(TMP_DIR, `highlight-${h.id}.mp4`);
+    const clipRaw = path.join(TMP_DIR, `highlight-${h.id}-raw.mp4`);
 
-    await new Promise((resolve) => {
-      const proc = spawn("ffmpeg", [
-        "-ss", String(desde),
-        "-i", fullVideoPath,
-        "-t", "35",
-        "-c:v", "libx264", "-preset", "ultrafast",
-        "-c:a", "aac",
-        "-movflags", "+faststart",
-        "-y", clipPath,
-      ], { stdio: "ignore" });
-      proc.on("close", resolve);
-    });
+    await ffmpegRun([
+      "-ss", String(desde),
+      "-i", fullVideoPath,
+      "-t", "35",
+      "-c:v", "libx264", "-crf", "26", "-preset", "fast",
+      "-c:a", "aac",
+      "-movflags", "+faststart",
+      "-y", clipRaw,
+    ]);
 
-    if (!fs.existsSync(clipPath)) {
+    if (!fs.existsSync(clipRaw)) {
       log(`⚠️  No se pudo cortar el highlight ${h.id}`);
       continue;
     }
 
     try {
+      const clipPath = await procesarBranding(clipRaw);
       const clipUrl = await subirR2(`highlights/${h.id}.mp4`, clipPath);
       await supabase.from("highlights").update({ clip_url: clipUrl }).eq("id", h.id);
       fs.unlinkSync(clipPath);
@@ -218,6 +371,7 @@ async function detenerYSubir(turnoId) {
   if (!rec) return;
 
   rec.proceso.kill("SIGINT");
+  detenerPollingMarcador();
   const { filePath, startTime } = rec;
   delete grabaciones[turnoId];
 
@@ -229,24 +383,32 @@ async function detenerYSubir(turnoId) {
     return;
   }
 
-  // Subir video completo
-  const key = `turnos/${turnoId}.mp4`;
-  log(`⬆️  Subiendo video completo a R2…`);
+  const zocaloPath = filePath.replace(".mp4", "_zocalo.mp4");
+  const finalPath = filePath.replace(".mp4", "_final.mp4");
 
   try {
-    const videoUrl = await subirR2(key, filePath);
+    // Aplicar zócalo al video crudo — los highlights se cortan de este video
+    // para que los timestamps sean correctos (sin el desplazamiento del intro)
+    await aplicarZocalo(filePath, zocaloPath);
+
+    // Cortar highlights del video con zócalo pero sin intro/outro
+    await procesarHighlights(turnoId, zocaloPath, startTime);
+
+    // Agregar intro/outro al video completo y subir
+    await agregarIntroOutro(zocaloPath, finalPath);
+
+    const key = `turnos/${turnoId}.mp4`;
+    const videoUrl = await subirR2(key, finalPath);
     await supabase.from("turnos").update({ video_url: videoUrl }).eq("id", turnoId);
     log(`✅ Turno ${turnoId} disponible: ${videoUrl}`);
+
+    fs.unlinkSync(finalPath);
   } catch (err) {
-    log(`❌ Error subiendo a R2: ${err.message}`);
-    fs.unlinkSync(filePath);
-    return;
+    log(`❌ Error procesando turno ${turnoId}: ${err.message}`);
+    for (const tmp of [filePath, zocaloPath, finalPath]) {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    }
   }
-
-  // Procesar highlights antes de borrar el video local
-  await procesarHighlights(turnoId, filePath, startTime);
-
-  fs.unlinkSync(filePath);
 }
 
 // ── Scheduling ────────────────────────────────────────────────────────────────
@@ -310,6 +472,7 @@ if (!RTSP_URL) {
 
 log(`🚀 Recorder iniciado — Cancha: ${CANCHA_ID}`);
 log(`📷 Fuente de video: ${RTSP_URL}`);
+log(`🎨 Assets: ${ASSETS_DIR}`);
 
 // Crear turnos desde horario tipo y luego programar grabaciones
 crearTurnosDesdeHorario().then(programarTurnos);
