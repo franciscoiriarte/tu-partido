@@ -12,10 +12,8 @@ type Marcador = {
   puntos_a: string;
   puntos_b: string;
   sets: Set[];
+  saque: "a" | "b";
 };
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const PUNTOS = ["0", "15", "30", "40"];
 
 const defaultMarcador = (): Marcador => ({
   equipo_a: "Equipo A",
@@ -23,6 +21,7 @@ const defaultMarcador = (): Marcador => ({
   puntos_a: "0",
   puntos_b: "0",
   sets: [{ a: 0, b: 0 }],
+  saque: "a",
 });
 
 function nextPuntos(mio: string, rival: string): { nuevoMio: string; nuevoRival: string; gano: boolean } {
@@ -30,11 +29,11 @@ function nextPuntos(mio: string, rival: string): { nuevoMio: string; nuevoRival:
   if (mio === "15") return { nuevoMio: "30", nuevoRival: rival, gano: false };
   if (mio === "30") return { nuevoMio: "40", nuevoRival: rival, gano: false };
   if (mio === "40") {
-    if (rival === "A") return { nuevoMio: "40", nuevoRival: "40", gano: false }; // saca ventaja al rival
-    if (rival === "40") return { nuevoMio: "A", nuevoRival: "40", gano: false }; // ventaja
-    return { nuevoMio: "0", nuevoRival: "0", gano: true }; // gana juego
+    if (rival === "A") return { nuevoMio: "40", nuevoRival: "40", gano: false };
+    if (rival === "40") return { nuevoMio: "A", nuevoRival: "40", gano: false };
+    return { nuevoMio: "0", nuevoRival: "0", gano: true };
   }
-  if (mio === "A") return { nuevoMio: "0", nuevoRival: "0", gano: true }; // gana juego con ventaja
+  if (mio === "A") return { nuevoMio: "0", nuevoRival: "0", gano: true };
   return { nuevoMio: "0", nuevoRival: rival, gano: false };
 }
 
@@ -101,7 +100,9 @@ function MarcadorInner() {
     let nuevoMarcador: Marcador;
     if (gano) {
       const nuevosSets = ganarJuego(marcador.sets, equipo);
-      nuevoMarcador = { ...marcador, puntos_a: "0", puntos_b: "0", sets: nuevosSets };
+      // El saque cambia de equipo al ganar un juego
+      const nuevoSaque = marcador.saque === "a" ? "b" : "a";
+      nuevoMarcador = { ...marcador, puntos_a: "0", puntos_b: "0", sets: nuevosSets, saque: nuevoSaque };
     } else {
       nuevoMarcador = {
         ...marcador,
@@ -113,6 +114,13 @@ function MarcadorInner() {
     setHistorial((h) => [...h.slice(-19), marcador]);
     setMarcador(nuevoMarcador);
     guardar(nuevoMarcador);
+  };
+
+  const toggleSaque = () => {
+    const nuevo = { ...marcador, saque: marcador.saque === "a" ? "b" as const : "a" as const };
+    setHistorial((h) => [...h.slice(-19), marcador]);
+    setMarcador(nuevo);
+    guardar(nuevo);
   };
 
   const deshacer = () => {
@@ -138,8 +146,8 @@ function MarcadorInner() {
     <main className="min-h-screen flex flex-col px-4 py-6 max-w-sm mx-auto" style={{ background: "var(--background)" }}>
       <p className="text-white/40 text-xs text-center mb-6 uppercase tracking-widest">Marcador en vivo</p>
 
-      {/* Nombres */}
-      <div className="flex gap-2 mb-6">
+      {/* Nombres + indicador de saque */}
+      <div className="flex gap-2 mb-2">
         {(["a", "b"] as const).map((e) => (
           <input
             key={e}
@@ -153,6 +161,19 @@ function MarcadorInner() {
             className="flex-1 text-center text-sm font-semibold rounded px-2 py-2 text-white outline-none"
             style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
           />
+        ))}
+      </div>
+
+      {/* Indicador de saque */}
+      <div className="flex mb-6">
+        {(["a", "b"] as const).map((e) => (
+          <div key={e} className="flex-1 flex justify-center">
+            {marcador.saque === e ? (
+              <span className="text-lg" title="Saca">🎾</span>
+            ) : (
+              <span className="text-lg opacity-0">🎾</span>
+            )}
+          </div>
         ))}
       </div>
 
@@ -184,7 +205,7 @@ function MarcadorInner() {
       </div>
 
       {/* Botones de punto */}
-      <div className="flex gap-3 mb-4">
+      <div className="flex gap-3 mb-3">
         <button
           onClick={() => punto("a")}
           className="flex-1 py-8 rounded-xl text-white text-xl font-bold active:scale-95 transition-transform"
@@ -201,17 +222,25 @@ function MarcadorInner() {
         </button>
       </div>
 
+      {/* Cambiar saque manualmente */}
+      <button
+        onClick={toggleSaque}
+        className="w-full py-3 rounded-xl text-sm font-semibold mb-3"
+        style={{ background: "var(--surface)", color: "white" }}
+      >
+        🎾 Cambiar saque
+      </button>
+
       {/* Deshacer */}
       <button
         onClick={deshacer}
         disabled={historial.length === 0}
         className="w-full py-3 rounded-xl text-sm font-semibold transition-opacity disabled:opacity-30"
-        style={{ background: "var(--surface)", color: "var(--text-muted, white)" }}
+        style={{ background: "var(--surface)", color: "white" }}
       >
         ↩ Deshacer
       </button>
 
-      {/* Estado */}
       <p className="text-center mt-4 text-xs" style={{ color: estado === "ok" ? "#22c55e" : estado === "error" ? "#ef4444" : "transparent" }}>
         {estado === "ok" ? "Guardado" : estado === "error" ? "Error al guardar" : "."}
       </p>
