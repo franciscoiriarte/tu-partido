@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 
 type Set = { a: number; b: number };
 
@@ -12,6 +14,7 @@ type Marcador = {
   sets: Set[];
 };
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const PUNTOS = ["0", "15", "30", "40"];
 
 const defaultMarcador = (): Marcador => ({
@@ -51,29 +54,23 @@ function ganarJuego(sets: Set[], equipo: "a" | "b"): Set[] {
   return nuevos;
 }
 
-export default function MarcadorPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ cancha_id?: string }>;
-}) {
-  const [canchaId, setCanchaId] = useState("");
+function MarcadorInner() {
+  const searchParams = useSearchParams();
+  const canchaId = searchParams.get("cancha_id") ?? "";
+
   const [marcador, setMarcador] = useState<Marcador>(defaultMarcador());
   const [guardando, setGuardando] = useState(false);
   const [estado, setEstado] = useState<"idle" | "ok" | "error">("idle");
   const [historial, setHistorial] = useState<Marcador[]>([]);
 
   useEffect(() => {
-    searchParams.then(({ cancha_id }) => {
-      if (cancha_id) {
-        setCanchaId(cancha_id);
-        fetch(`/api/marcador?cancha_id=${cancha_id}`)
-          .then((r) => r.json())
-          .then(({ marcador }) => {
-            if (marcador) setMarcador(marcador);
-          });
-      }
-    });
-  }, [searchParams]);
+    if (!canchaId) return;
+    fetch(`/api/marcador?cancha_id=${canchaId}`)
+      .then((r) => r.json())
+      .then(({ marcador }) => {
+        if (marcador) setMarcador(marcador);
+      });
+  }, [canchaId]);
 
   const guardar = useCallback(
     async (nuevo: Marcador) => {
@@ -220,5 +217,13 @@ export default function MarcadorPage({
       </p>
       {guardando && <p className="text-center text-white/30 text-xs">Guardando…</p>}
     </main>
+  );
+}
+
+export default function MarcadorPage() {
+  return (
+    <Suspense>
+      <MarcadorInner />
+    </Suspense>
   );
 }
