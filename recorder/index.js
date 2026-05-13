@@ -228,6 +228,17 @@ function iniciarStream() {
 
   streamProcess = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
 
+  // Loguear stderr de ffmpeg en tiempo real para diagnóstico
+  streamProcess.stderr.on("data", (chunk) => {
+    const lines = chunk.toString().split("\n").filter((l) => l.trim());
+    for (const line of lines) {
+      // Solo loguear líneas relevantes (errores, conexión, frames)
+      if (/error|fail|unable|refused|invalid|frame=|fps=|Connection/i.test(line)) {
+        log(`[ffmpeg] ${line.trim()}`);
+      }
+    }
+  });
+
   // Si ffmpeg sigue vivo a los 10 segundos, consideramos que conectó
   const confirmTimer = setTimeout(() => {
     if (streamProcess) {
@@ -236,19 +247,12 @@ function iniciarStream() {
     }
   }, 10000);
 
-  // Capturar stderr para loguear errores de ffmpeg
-  let stderrBuf = "";
-  streamProcess.stderr.on("data", (chunk) => {
-    stderrBuf += chunk.toString();
-  });
-
   streamProcess.on("close", (code) => {
     clearTimeout(confirmTimer);
     setStreamActivo(false);
     streamProcess = null;
     if (code !== 0) {
-      const lastLine = stderrBuf.trim().split("\n").at(-1) ?? "";
-      log(`⚠️  Stream YouTube terminó (código ${code}): ${lastLine}`);
+      log(`⚠️  Stream YouTube terminó con error (código ${code}) — revisá los logs de ffmpeg arriba`);
     }
   });
 
