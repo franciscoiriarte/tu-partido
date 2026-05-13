@@ -213,18 +213,18 @@ function iniciarStream() {
 
   const ytUrl = `rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}`;
 
+  const videoArgs = [
+    "-c:v", "libx264", "-preset", "veryfast", "-b:v", "3000k",
+    "-maxrate", "3000k", "-bufsize", "6000k",
+    "-pix_fmt", "yuv420p", "-g", "60", "-tune", "zerolatency",
+    "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+    "-f", "flv", ytUrl,
+  ];
+
   const args =
     RTSP_URL === "avfoundation"
-      ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0",
-         "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
-         "-pix_fmt", "yuv420p", "-g", "60",
-         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-         "-f", "flv", ytUrl]
-      : ["-rtsp_transport", "tcp", "-i", RTSP_URL,
-         "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
-         "-pix_fmt", "yuv420p", "-g", "60",
-         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-         "-f", "flv", ytUrl];
+      ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0", ...videoArgs]
+      : ["-rtsp_transport", "tcp", "-i", RTSP_URL, ...videoArgs];
 
   streamProcess = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
 
