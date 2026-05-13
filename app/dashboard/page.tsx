@@ -2,6 +2,7 @@ import { createClient } from "@/utils/supabase/server";
 import { redirect } from "next/navigation";
 import TurnosManager from "./TurnosManager";
 import HorarioManager from "./HorarioManager";
+import TransmisionesManager from "./TransmisionesManager";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -49,6 +50,7 @@ export default async function DashboardPage() {
       <p className="text-sm text-white/40 mb-8">Gestión de turnos</p>
       <TurnosManager canchas={canchas} />
       <HorarioManager canchas={canchas} horarios={horarios ?? []} />
+      <TransmisionesManager canchas={canchas} />
       <form action="/auth/signout" method="post" className="mt-12">
         <button type="submit" className="text-sm text-white/40 underline">
           Cerrar sesión

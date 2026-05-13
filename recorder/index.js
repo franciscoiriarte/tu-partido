@@ -102,6 +102,7 @@ async function crearTurnosDesdeHorario() {
 
 const grabaciones = {}; // turnoId → { proceso, filePath, startTime }
 let timeouts = [];      // para cancelar al refrescar
+let streamProcess = null; // proceso ffmpeg para stream manual en vivo
 
 // ── Utilidades de tiempo ──────────────────────────────────────────────────────
 
@@ -169,39 +170,21 @@ function detenerPollingMarcador() {
 
 // ── Grabación ─────────────────────────────────────────────────────────────────
 
-function iniciarGrabacion(turnoId, filePath, transmitir = false) {
+function iniciarGrabacion(turnoId, filePath) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
-
-  const ytUrl = YOUTUBE_STREAM_KEY && transmitir
-    ? `rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}`
-    : null;
-
-  // Overlay del marcador (solo cuando se transmite a YouTube)
-  const scoreFilter = ytUrl
-    ? ["-vf", `drawtext=textfile=${SCORE_FILE}:reload=1:fontcolor=white:fontsize=22:box=1:boxcolor=black@0.65:boxborderw=8:x=10:y=10`]
-    : [];
-
-  // Salida: solo archivo local, o archivo + YouTube en paralelo con tee
-  const output = ytUrl
-    ? ["-f", "tee", `[f=mp4:movflags=+faststart]${filePath}|[f=flv]${ytUrl}`]
-    : ["-movflags", "+faststart", "-y", filePath];
 
   const args =
     RTSP_URL === "avfoundation"
-      ? // Modo test: cámara + micrófono del Mac
-        ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0",
+      ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0",
          "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
          "-pix_fmt", "yuv420p", "-g", "60",
          "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-         ...scoreFilter, ...output]
-      : // Modo real: cámara IP via RTSP
-        ["-rtsp_transport", "tcp", "-i", RTSP_URL,
+         "-movflags", "+faststart", "-y", filePath]
+      : ["-rtsp_transport", "tcp", "-i", RTSP_URL,
          "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
          "-pix_fmt", "yuv420p", "-g", "60",
          "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-         ...scoreFilter, ...output];
-
-  iniciarPollingMarcador(turnoId);
+         "-movflags", "+faststart", "-y", filePath];
 
   const proc = spawn("ffmpeg", args, { stdio: "ignore" });
   grabaciones[turnoId] = { proceso: proc, filePath, startTime: Date.now() };
@@ -212,10 +195,63 @@ function iniciarGrabacion(turnoId, filePath, transmitir = false) {
     }
   });
 
-  if (ytUrl) {
-    log(`🎥 Grabando turno ${turnoId} + transmitiendo en vivo a YouTube`);
-  } else {
-    log(`🎥 Grabando turno ${turnoId} → ${filePath}`);
+  log(`🎥 Grabando turno ${turnoId} → ${filePath}`);
+}
+
+// ── Stream manual en vivo ─────────────────────────────────────────────────────
+
+function iniciarStream() {
+  if (streamProcess) return;
+  if (!YOUTUBE_STREAM_KEY) {
+    log("⚠️  Sin YOUTUBE_STREAM_KEY — no se puede iniciar stream");
+    return;
+  }
+
+  const ytUrl = `rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}`;
+
+  const args =
+    RTSP_URL === "avfoundation"
+      ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0",
+         "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
+         "-pix_fmt", "yuv420p", "-g", "60",
+         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+         "-f", "flv", ytUrl]
+      : ["-rtsp_transport", "tcp", "-i", RTSP_URL,
+         "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
+         "-pix_fmt", "yuv420p", "-g", "60",
+         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+         "-f", "flv", ytUrl];
+
+  streamProcess = spawn("ffmpeg", args, { stdio: "ignore" });
+  streamProcess.on("close", (code) => {
+    if (code !== 0) log(`⚠️  Stream YouTube terminó inesperadamente (código ${code})`);
+    streamProcess = null;
+  });
+  log(`🔴 Stream en vivo iniciado → YouTube`);
+}
+
+function detenerStream() {
+  if (!streamProcess) return;
+  streamProcess.kill("SIGTERM");
+  streamProcess = null;
+  log(`⏹️  Stream YouTube detenido`);
+}
+
+async function verificarStream() {
+  if (!YOUTUBE_STREAM_KEY) return;
+
+  const { data: cancha } = await supabase
+    .from("canchas")
+    .select("transmitiendo")
+    .eq("id", CANCHA_ID)
+    .single();
+
+  if (!cancha) return;
+
+  if (cancha.transmitiendo && !streamProcess) {
+    iniciarStream();
+  } else if (!cancha.transmitiendo && streamProcess) {
+    detenerStream();
   }
 }
 
@@ -466,7 +502,7 @@ async function getTurnosHoy() {
   const hoy = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
   const { data, error } = await supabase
     .from("turnos")
-    .select("id, hora_inicio, hora_fin, transmitir")
+    .select("id, hora_inicio, hora_fin")
     .eq("cancha_id", CANCHA_ID)
     .eq("fecha", hoy)
     .is("video_url", null) // omitir los que ya tienen video
@@ -496,11 +532,11 @@ async function programarTurnos() {
 
     if (msInicio > 0) {
       // Todavía falta: programar inicio
-      log(`⏰ Turno ${turno.id} arranca en ${Math.round(msInicio / 60000)} min${turno.transmitir ? " (con stream YouTube)" : ""}`);
-      timeouts.push(setTimeout(() => iniciarGrabacion(turno.id, filePath, turno.transmitir), msInicio));
+      log(`⏰ Turno ${turno.id} arranca en ${Math.round(msInicio / 60000)} min`);
+      timeouts.push(setTimeout(() => iniciarGrabacion(turno.id, filePath), msInicio));
     } else {
       // Ya empezó: grabar ahora (el script se inició tarde o turno en curso)
-      iniciarGrabacion(turno.id, filePath, turno.transmitir);
+      iniciarGrabacion(turno.id, filePath);
     }
 
     // Programar fin en todos los casos
@@ -583,3 +619,7 @@ setInterval(async () => {
 
 // Procesar clip jobs cada 10 segundos
 setInterval(procesarClipJobs, 10 * 1000);
+
+// Verificar stream manual cada 30 segundos
+verificarStream();
+setInterval(verificarStream, 30 * 1000);

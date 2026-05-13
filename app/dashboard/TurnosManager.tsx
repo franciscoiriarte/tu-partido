@@ -16,7 +16,6 @@ type Turno = {
   hora_inicio: string;
   hora_fin: string;
   cancha_id: string;
-  transmitir: boolean;
 };
 
 function fechaHoy() {
@@ -67,12 +66,6 @@ export default function TurnosManager({ canchas }: { canchas: Cancha[] }) {
     setTurnos((prev) => prev.filter((t) => t.id !== id));
   }
 
-  async function toggleTransmitir(id: string, valor: boolean) {
-    const supabase = createClient();
-    await supabase.from("turnos").update({ transmitir: valor }).eq("id", id);
-    setTurnos((prev) => prev.map((t) => t.id === id ? { ...t, transmitir: valor } : t));
-  }
-
   return (
     <div>
       <input
@@ -90,7 +83,6 @@ export default function TurnosManager({ canchas }: { canchas: Cancha[] }) {
           turnos={turnos.filter((t) => t.cancha_id === cancha.id)}
           onAgregar={(hi, hf) => agregarTurno(cancha.id, hi, hf)}
           onEliminar={eliminarTurno}
-          onToggleTransmitir={toggleTransmitir}
         />
       ))}
 
@@ -108,13 +100,11 @@ function CanchaSection({
   turnos,
   onAgregar,
   onEliminar,
-  onToggleTransmitir,
 }: {
   cancha: Cancha;
   turnos: Turno[];
   onAgregar: (hi: string, hf: string) => void;
   onEliminar: (id: string) => void;
-  onToggleTransmitir: (id: string, valor: boolean) => void;
 }) {
   const [horaInicio, setHoraInicio] = useState("");
   const [horaFin, setHoraFin] = useState("");
@@ -146,26 +136,12 @@ function CanchaSection({
             <span className="text-sm text-white">
               {turno.hora_inicio.slice(0, 5)} — {turno.hora_fin.slice(0, 5)}
             </span>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => onToggleTransmitir(turno.id, !turno.transmitir)}
-                className="flex items-center gap-1 text-xs px-2 py-1 rounded"
-                style={{
-                  background: turno.transmitir ? "#dc2626" : "var(--surface)",
-                  color: turno.transmitir ? "#fff" : "rgba(255,255,255,0.4)",
-                  border: "1px solid var(--border)",
-                }}
-                title={turno.transmitir ? "Dejar de transmitir" : "Transmitir en YouTube"}
-              >
-                ▶ {turno.transmitir ? "En vivo" : "YouTube"}
-              </button>
-              <button
-                onClick={() => onEliminar(turno.id)}
-                className="text-xs text-white/40 underline"
-              >
-                Eliminar
-              </button>
-            </div>
+            <button
+              onClick={() => onEliminar(turno.id)}
+              className="text-xs text-white/40 underline"
+            >
+              Eliminar
+            </button>
           </li>
         ))}
       </ul>
