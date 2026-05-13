@@ -200,6 +200,10 @@ function iniciarGrabacion(turnoId, filePath) {
 
 // ── Stream manual en vivo ─────────────────────────────────────────────────────
 
+async function setStreamActivo(valor) {
+  await supabase.from("canchas").update({ stream_activo: valor }).eq("id", CANCHA_ID);
+}
+
 function iniciarStream() {
   if (streamProcess) return;
   if (!YOUTUBE_STREAM_KEY) {
@@ -222,19 +226,41 @@ function iniciarStream() {
          "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
          "-f", "flv", ytUrl];
 
-  streamProcess = spawn("ffmpeg", args, { stdio: "ignore" });
-  streamProcess.on("close", (code) => {
-    if (code !== 0) log(`⚠️  Stream YouTube terminó inesperadamente (código ${code})`);
-    streamProcess = null;
+  streamProcess = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+
+  // Si ffmpeg sigue vivo a los 10 segundos, consideramos que conectó
+  const confirmTimer = setTimeout(() => {
+    if (streamProcess) {
+      setStreamActivo(true);
+      log("✅ Stream confirmado → YouTube en vivo");
+    }
+  }, 10000);
+
+  // Capturar stderr para loguear errores de ffmpeg
+  let stderrBuf = "";
+  streamProcess.stderr.on("data", (chunk) => {
+    stderrBuf += chunk.toString();
   });
-  log(`🔴 Stream en vivo iniciado → YouTube`);
+
+  streamProcess.on("close", (code) => {
+    clearTimeout(confirmTimer);
+    setStreamActivo(false);
+    streamProcess = null;
+    if (code !== 0) {
+      const lastLine = stderrBuf.trim().split("\n").at(-1) ?? "";
+      log(`⚠️  Stream YouTube terminó (código ${code}): ${lastLine}`);
+    }
+  });
+
+  log("🔴 Conectando a YouTube...");
 }
 
 function detenerStream() {
   if (!streamProcess) return;
   streamProcess.kill("SIGTERM");
   streamProcess = null;
-  log(`⏹️  Stream YouTube detenido`);
+  setStreamActivo(false);
+  log("⏹️  Stream YouTube detenido");
 }
 
 async function verificarStream() {
