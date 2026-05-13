@@ -169,10 +169,10 @@ function detenerPollingMarcador() {
 
 // ── Grabación ─────────────────────────────────────────────────────────────────
 
-function iniciarGrabacion(turnoId, filePath) {
+function iniciarGrabacion(turnoId, filePath, transmitir = false) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 
-  const ytUrl = YOUTUBE_STREAM_KEY
+  const ytUrl = YOUTUBE_STREAM_KEY && transmitir
     ? `rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}`
     : null;
 
@@ -269,6 +269,49 @@ async function aplicarZocalo(inputPath, outputPath) {
   fs.unlinkSync(inputPath);
 }
 
+async function tieneAudio(filePath) {
+  return new Promise((resolve) => {
+    const p = spawn("ffprobe", [
+      "-v", "error", "-select_streams", "a",
+      "-show_entries", "stream=codec_type",
+      "-of", "csv=p=0", filePath,
+    ]);
+    let out = "";
+    p.stdout.on("data", (d) => (out += d.toString()));
+    p.on("close", () => resolve(out.trim().length > 0));
+  });
+}
+
+async function normalizarAsset(srcPath) {
+  const normPath = srcPath.replace(".mp4", "_norm.mp4");
+
+  // Reutilizar si el archivo normalizado es más nuevo que el original
+  if (fs.existsSync(normPath)) {
+    if (fs.statSync(normPath).mtimeMs > fs.statSync(srcPath).mtimeMs) return normPath;
+  }
+
+  log(`🔧 Normalizando ${path.basename(srcPath)}…`);
+  const conAudio = await tieneAudio(srcPath);
+
+  const args = conAudio
+    ? ["-i", srcPath,
+       "-c:v", "libx264", "-crf", "26", "-preset", "fast",
+       "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30",
+       "-c:a", "aac", "-ar", "44100", "-ac", "2",
+       "-map", "0:v", "-map", "0:a",
+       "-movflags", "+faststart", "-y", normPath]
+    : ["-i", srcPath,
+       "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+       "-c:v", "libx264", "-crf", "26", "-preset", "fast",
+       "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30",
+       "-c:a", "aac", "-ar", "44100", "-ac", "2",
+       "-map", "0:v", "-map", "1:a",
+       "-shortest", "-movflags", "+faststart", "-y", normPath];
+
+  await ffmpegRun(args);
+  return normPath;
+}
+
 async function agregarIntroOutro(inputPath, outputPath) {
   const introPath = path.join(ASSETS_DIR, "intro.mp4");
   const outroPath = path.join(ASSETS_DIR, "outro.mp4");
@@ -281,18 +324,24 @@ async function agregarIntroOutro(inputPath, outputPath) {
   }
 
   log("🎬 Agregando intro/outro…");
+
+  // Normalizar antes de concatenar para garantizar formato compatible
+  const introNorm = hasIntro ? await normalizarAsset(introPath) : null;
+  const outroNorm = hasOutro ? await normalizarAsset(outroPath) : null;
+
   const listPath = inputPath.replace(".mp4", "_list.txt");
   const lines = [];
-  if (hasIntro) lines.push(`file '${introPath}'`);
+  if (introNorm) lines.push(`file '${introNorm}'`);
   lines.push(`file '${inputPath}'`);
-  if (hasOutro) lines.push(`file '${outroPath}'`);
+  if (outroNorm) lines.push(`file '${outroNorm}'`);
   fs.writeFileSync(listPath, lines.join("\n"));
 
   await ffmpegRun([
     "-f", "concat", "-safe", "0",
     "-i", listPath,
     "-c:v", "libx264", "-crf", "26", "-preset", "fast",
-    "-c:a", "aac", "-movflags", "+faststart",
+    "-c:a", "aac", "-ar", "44100", "-ac", "2",
+    "-movflags", "+faststart",
     "-y", outputPath,
   ]);
 
@@ -417,7 +466,7 @@ async function getTurnosHoy() {
   const hoy = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
   const { data, error } = await supabase
     .from("turnos")
-    .select("id, hora_inicio, hora_fin")
+    .select("id, hora_inicio, hora_fin, transmitir")
     .eq("cancha_id", CANCHA_ID)
     .eq("fecha", hoy)
     .is("video_url", null) // omitir los que ya tienen video
@@ -447,11 +496,11 @@ async function programarTurnos() {
 
     if (msInicio > 0) {
       // Todavía falta: programar inicio
-      log(`⏰ Turno ${turno.id} arranca en ${Math.round(msInicio / 60000)} min`);
-      timeouts.push(setTimeout(() => iniciarGrabacion(turno.id, filePath), msInicio));
+      log(`⏰ Turno ${turno.id} arranca en ${Math.round(msInicio / 60000)} min${turno.transmitir ? " (con stream YouTube)" : ""}`);
+      timeouts.push(setTimeout(() => iniciarGrabacion(turno.id, filePath, turno.transmitir), msInicio));
     } else {
       // Ya empezó: grabar ahora (el script se inició tarde o turno en curso)
-      iniciarGrabacion(turno.id, filePath);
+      iniciarGrabacion(turno.id, filePath, turno.transmitir);
     }
 
     // Programar fin en todos los casos
