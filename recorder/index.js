@@ -251,7 +251,7 @@ function iniciarStream() {
     clearTimeout(confirmTimer);
     setStreamActivo(false);
     streamProcess = null;
-    if (code !== 0) {
+    if (code !== 0 && code !== 255) {
       log(`⚠️  Stream YouTube terminó con error (código ${code}) — revisá los logs de ffmpeg arriba`);
     }
   });
