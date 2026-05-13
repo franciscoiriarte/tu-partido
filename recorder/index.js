@@ -204,7 +204,7 @@ async function setStreamActivo(valor) {
   await supabase.from("canchas").update({ stream_activo: valor }).eq("id", CANCHA_ID);
 }
 
-function iniciarStream(titulo = "") {
+function iniciarStream() {
   if (streamProcess) return;
   if (!YOUTUBE_STREAM_KEY) {
     log("⚠️  Sin YOUTUBE_STREAM_KEY — no se puede iniciar stream");
@@ -212,14 +212,12 @@ function iniciarStream(titulo = "") {
   }
 
   const ytUrl = `rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_STREAM_KEY}`;
-  const metadataArgs = titulo ? ["-metadata", `title=${titulo}`] : [];
 
   const videoArgs = [
     "-c:v", "libx264", "-preset", "veryfast", "-b:v", "3000k",
     "-maxrate", "3000k", "-bufsize", "6000k",
     "-pix_fmt", "yuv420p", "-g", "60", "-tune", "zerolatency",
     "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-    ...metadataArgs,
     "-f", "flv", ytUrl,
   ];
 
@@ -281,7 +279,7 @@ async function verificarStream() {
   if (!cancha) return;
 
   if (cancha.transmitiendo && !streamProcess) {
-    iniciarStream(cancha.titulo_stream ?? "");
+    iniciarStream();
   } else if (!cancha.transmitiendo && streamProcess) {
     detenerStream();
   }
