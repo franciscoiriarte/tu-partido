@@ -67,7 +67,7 @@ function msHastaHora(horaStr) {
 
 function ffmpegArgs(rtspUrl, output) {
   const encode = [
-    "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "3000k", "-bufsize", "6000k",
+    "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "1500k", "-bufsize", "3000k",
     "-pix_fmt", "yuv420p", "-g", "60",
     "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
     ...output,
@@ -204,7 +204,7 @@ function iniciarStream(cancha) {
   const rtspUrl = cancha.rtsp_url || "avfoundation";
 
   const args = ffmpegArgs(rtspUrl, [
-    "-b:v", "3000k", "-tune", "zerolatency", "-f", "flv", ytUrl,
+    "-b:v", "1500k", "-tune", "zerolatency", "-f", "flv", ytUrl,
   ]);
 
   const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
