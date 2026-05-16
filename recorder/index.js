@@ -207,16 +207,7 @@ function iniciarStream(cancha) {
     "-b:v", "1500k", "-tune", "zerolatency", "-f", "flv", ytUrl,
   ]);
 
-  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
-
-  proc.stderr.on("data", (chunk) => {
-    const lines = chunk.toString().split("\n").filter((l) => l.trim());
-    for (const line of lines) {
-      if (/error|fail|unable|refused|invalid|frame=|fps=|Connection/i.test(line)) {
-        log(`[ffmpeg:${cancha.nombre}] ${line.trim()}`);
-      }
-    }
-  });
+  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
 
   const confirmTimer = setTimeout(() => {
     if (streamProcesses[cancha.id]) {
