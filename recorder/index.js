@@ -172,6 +172,7 @@ function detenerPollingMarcador() {
 // ── Grabación ─────────────────────────────────────────────────────────────────
 
 function iniciarGrabacion(turnoId, filePath, rtspUrl) {
+  if (grabaciones[turnoId]) return; // ya en curso
   fs.mkdirSync(TMP_DIR, { recursive: true });
 
   const args = ffmpegArgs(rtspUrl, ["-movflags", "+faststart", "-y", filePath]);
