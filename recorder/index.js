@@ -597,6 +597,19 @@ if (!COMPLEJO_ID) {
   process.exit(1);
 }
 
+function limpiarYSalir() {
+  log("🛑 Apagando recorder — matando procesos ffmpeg activos…");
+  for (const entry of Object.values(streamProcesses)) {
+    try { entry.proceso.kill("SIGTERM"); } catch (_) {}
+  }
+  for (const rec of Object.values(grabaciones)) {
+    try { if (rec.proceso) rec.proceso.kill("SIGTERM"); } catch (_) {}
+  }
+  process.exit(0);
+}
+process.on("SIGINT", limpiarYSalir);
+process.on("SIGTERM", limpiarYSalir);
+
 log(`🚀 Recorder iniciado — Complejo: ${COMPLEJO_ID}`);
 log(`🎨 Assets: ${ASSETS_DIR}`);
 
