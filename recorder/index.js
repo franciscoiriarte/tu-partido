@@ -610,6 +610,12 @@ function limpiarYSalir() {
 process.on("SIGINT", limpiarYSalir);
 process.on("SIGTERM", limpiarYSalir);
 
+// Limpiar ffmpegs huérfanos de runs anteriores (por si hubo crash o kill -9)
+{ const { spawnSync } = require("child_process");
+  spawnSync("pkill", ["-f", "ffmpeg.*rtmp"], { stdio: "ignore" });
+  spawnSync("pkill", ["-f", "ffmpeg.*avfoundation"], { stdio: "ignore" });
+}
+
 log(`🚀 Recorder iniciado — Complejo: ${COMPLEJO_ID}`);
 log(`🎨 Assets: ${ASSETS_DIR}`);
 
