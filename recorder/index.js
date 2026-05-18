@@ -171,13 +171,27 @@ function detenerPollingMarcador() {
 
 // ── Grabación ─────────────────────────────────────────────────────────────────
 
-function iniciarGrabacion(turnoId, filePath, rtspUrl) {
-  if (grabaciones[turnoId]) return; // ya en curso
+function iniciarGrabacion(turnoId, filePath, rtspUrl, canchaId) {
+  if (grabaciones[turnoId]) return;
   fs.mkdirSync(TMP_DIR, { recursive: true });
+
+  const streamEntry = streamProcesses[canchaId];
+  const esAvFoundation = !rtspUrl || rtspUrl === "avfoundation";
+
+  if (streamEntry && esAvFoundation) {
+    // Cámara ocupada por el stream → reiniciar como proceso combinado
+    const { ytUrl } = streamEntry;
+    clearTimeout(streamEntry.confirmTimer);
+    streamEntry.proceso.kill("SIGTERM");
+    delete streamProcesses[canchaId];
+    log(`🔄 Reiniciando como proceso combinado (grab+stream)…`);
+    setTimeout(() => _iniciarCombinado(turnoId, filePath, rtspUrl, canchaId, ytUrl), 1000);
+    return;
+  }
 
   const args = ffmpegArgs(rtspUrl, ["-movflags", "+faststart", "-y", filePath]);
   const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
-  grabaciones[turnoId] = { proceso: proc, filePath, startTime: Date.now() };
+  grabaciones[turnoId] = { proceso: proc, filePath, startTime: Date.now(), canchaId };
 
   proc.on("close", (code) => {
     if (code !== 0 && grabaciones[turnoId]) {
@@ -186,6 +200,44 @@ function iniciarGrabacion(turnoId, filePath, rtspUrl) {
   });
 
   log(`🎥 Grabando turno ${turnoId}`);
+}
+
+// Un solo proceso ffmpeg con tee: graba al archivo Y transmite a YouTube
+function _iniciarCombinado(turnoId, filePath, rtspUrl, canchaId, ytUrl, startTime = Date.now()) {
+  const input = (!rtspUrl || rtspUrl === "avfoundation")
+    ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0"]
+    : ["-rtsp_transport", "tcp", "-i", rtspUrl];
+  const encode = [
+    "-c:v", "libx264", "-preset", "veryfast",
+    "-b:v", "1500k", "-maxrate", "1500k", "-bufsize", "3000k",
+    "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-g", "60",
+    "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+  ];
+  const teeOut = `[f=flv]${ytUrl}|[f=mp4:movflags=+faststart]${filePath}`;
+  const proc = spawn("ffmpeg", [...input, ...encode, "-f", "tee", "-y", teeOut], {
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+
+  grabaciones[turnoId] = { proceso: proc, filePath, startTime, canchaId, combined: true };
+
+  const confirmTimer = setTimeout(() => {
+    if (streamProcesses[canchaId]) {
+      setStreamActivo(canchaId, true);
+      log(`✅ Stream+grab confirmado`);
+    }
+  }, 10000);
+  streamProcesses[canchaId] = { proceso: proc, confirmTimer, ytUrl, turnoId };
+
+  proc.on("close", (code) => {
+    clearTimeout(confirmTimer);
+    setStreamActivo(canchaId, false);
+    delete streamProcesses[canchaId];
+    if (code !== 0 && code !== 255 && grabaciones[turnoId]) {
+      log(`⚠️  Proceso combinado terminó inesperadamente (turno ${turnoId}, código ${code})`);
+    }
+  });
+
+  log(`🎥📺 Grabando + Streaming turno ${turnoId}`);
 }
 
 // ── Stream manual en vivo ─────────────────────────────────────────────────────
@@ -203,6 +255,19 @@ function iniciarStream(cancha) {
 
   const ytUrl = `rtmp://a.rtmp.youtube.com/live2/${cancha.youtube_stream_key}`;
   const rtspUrl = cancha.rtsp_url || "avfoundation";
+  const esAvFoundation = !rtspUrl || rtspUrl === "avfoundation";
+
+  // Si hay un turno grabando en esta cancha y la cámara no se puede compartir → proceso combinado
+  const entradaActiva = Object.entries(grabaciones)
+    .find(([, rec]) => rec.canchaId === cancha.id && !rec.combined);
+  if (entradaActiva && esAvFoundation) {
+    const [turnoId, rec] = entradaActiva;
+    rec.proceso.kill("SIGTERM");
+    delete grabaciones[turnoId];
+    log(`🔄 [${cancha.nombre}] Reiniciando como proceso combinado (stream+grab)…`);
+    setTimeout(() => _iniciarCombinado(turnoId, rec.filePath, rtspUrl, cancha.id, ytUrl, rec.startTime), 1000);
+    return;
+  }
 
   const args = ffmpegArgs(rtspUrl, [
     "-b:v", "1500k", "-tune", "zerolatency", "-f", "flv", ytUrl,
@@ -226,13 +291,28 @@ function iniciarStream(cancha) {
     }
   });
 
-  streamProcesses[cancha.id] = { proceso: proc, confirmTimer };
+  streamProcesses[cancha.id] = { proceso: proc, confirmTimer, ytUrl };
   log(`🔴 Conectando a YouTube... [${cancha.nombre}]`);
 }
 
 function detenerStream(cancha) {
   const entry = streamProcesses[cancha.id];
   if (!entry) return;
+
+  if (entry.turnoId) {
+    // Modo combinado: detener solo el stream, preservar la grabación hasta ahora
+    const turnoId = entry.turnoId;
+    if (grabaciones[turnoId]) {
+      grabaciones[turnoId] = { ...grabaciones[turnoId], proceso: null, stopped: true };
+    }
+    clearTimeout(entry.confirmTimer);
+    entry.proceso.kill("SIGINT"); // SIGINT para que ffmpeg escriba el trailer del MP4
+    delete streamProcesses[cancha.id];
+    setStreamActivo(cancha.id, false);
+    log(`⏹️  Stream detenido [${cancha.nombre}], grabación preservada`);
+    return;
+  }
+
   clearTimeout(entry.confirmTimer);
   entry.proceso.kill("SIGTERM");
   delete streamProcesses[cancha.id];
@@ -406,12 +486,17 @@ async function procesarBranding(rawPath) {
 async function detenerYSubir(turnoId) {
   const rec = grabaciones[turnoId];
   if (!rec) return;
-  rec.proceso.kill("SIGINT");
   detenerPollingMarcador();
+  if (!rec.stopped) {
+    rec.proceso.kill("SIGINT");
+    log(`⏹  Deteniendo grabación del turno ${turnoId}…`);
+    await new Promise((r) => setTimeout(r, 4000));
+  } else {
+    log(`⏹  Procesando grabación del turno ${turnoId} (proceso ya detenido)…`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
   const { filePath, startTime } = rec;
   delete grabaciones[turnoId];
-  log(`⏹  Deteniendo grabación del turno ${turnoId}…`);
-  await new Promise((r) => setTimeout(r, 4000));
   if (!fs.existsSync(filePath)) { log(`❌ No se encontró el archivo: ${filePath}`); return; }
   const zocaloPath = filePath.replace(".mp4", "_zocalo.mp4");
   const finalPath = filePath.replace(".mp4", "_final.mp4");
@@ -463,9 +548,9 @@ async function programarTurnos() {
     if (msFin <= 0) continue;
     if (msInicio > 0) {
       log(`⏰ Turno ${turno.id} arranca en ${Math.round(msInicio / 60000)} min`);
-      timeouts.push(setTimeout(() => iniciarGrabacion(turno.id, filePath, rtspUrl), msInicio));
+      timeouts.push(setTimeout(() => iniciarGrabacion(turno.id, filePath, rtspUrl, turno.cancha_id), msInicio));
     } else {
-      iniciarGrabacion(turno.id, filePath, rtspUrl);
+      iniciarGrabacion(turno.id, filePath, rtspUrl, turno.cancha_id);
     }
     timeouts.push(setTimeout(() => detenerYSubir(turno.id), msFin));
   }
