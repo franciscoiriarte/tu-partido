@@ -182,7 +182,7 @@ function iniciarGrabacion(turnoId, filePath, rtspUrl, canchaId) {
     // Cámara ocupada por el stream → reiniciar como proceso combinado
     const { ytUrl } = streamEntry;
     clearTimeout(streamEntry.confirmTimer);
-    streamEntry.proceso.kill("SIGTERM");
+    streamEntry.proceso.kill("SIGINT");
     delete streamProcesses[canchaId];
     log(`🔄 Reiniciando como proceso combinado (grab+stream)…`);
     setTimeout(() => _iniciarCombinado(turnoId, filePath, rtspUrl, canchaId, ytUrl), 1000);
@@ -217,8 +217,8 @@ function _iniciarCombinado(turnoId, filePath, rtspUrl, canchaId, ytUrl, startTim
     ...input,
     // Salida 1: stream a YouTube
     ...encodeBase, "-tune", "zerolatency", "-f", "flv", ytUrl,
-    // Salida 2: grabación al archivo
-    ...encodeBase, "-movflags", "+faststart", "-y", filePath,
+    // Salida 2: grabación al archivo (sin faststart para evitar rewrite del moov al detener)
+    ...encodeBase, "-y", filePath,
   ];
   const proc = spawn("ffmpeg", args, {
     stdio: ["ignore", "ignore", "inherit"],
@@ -268,7 +268,7 @@ function iniciarStream(cancha) {
     .find(([, rec]) => rec.canchaId === cancha.id && !rec.combined);
   if (entradaActiva && esAvFoundation) {
     const [turnoId, rec] = entradaActiva;
-    rec.proceso.kill("SIGTERM");
+    rec.proceso.kill("SIGINT");
     delete grabaciones[turnoId];
     log(`🔄 [${cancha.nombre}] Reiniciando como proceso combinado (stream+grab)…`);
     setTimeout(() => _iniciarCombinado(turnoId, rec.filePath, rtspUrl, cancha.id, ytUrl, rec.startTime), 1000);
@@ -367,7 +367,7 @@ async function subirR2(key, filePath) {
 
 function ffmpegRun(args) {
   return new Promise((resolve, reject) => {
-    const proc = spawn("ffmpeg", args, { stdio: "ignore" });
+    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
     proc.on("close", (code) => {
       if (code !== 0) reject(new Error(`ffmpeg salió con código ${code}`));
       else resolve();
