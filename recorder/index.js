@@ -217,8 +217,8 @@ function _iniciarCombinado(turnoId, filePath, rtspUrl, canchaId, ytUrl, startTim
     ...input,
     // Salida 1: stream a YouTube
     ...encodeBase, "-tune", "zerolatency", "-f", "flv", ytUrl,
-    // Salida 2: grabación al archivo (sin faststart para evitar rewrite del moov al detener)
-    ...encodeBase, "-y", filePath,
+    // Salida 2: grabación al archivo
+    ...encodeBase, "-movflags", "+faststart", "-y", filePath,
   ];
   const proc = spawn("ffmpeg", args, {
     stdio: ["ignore", "ignore", "inherit"],
@@ -271,7 +271,9 @@ function iniciarStream(cancha) {
     rec.proceso.kill("SIGINT");
     delete grabaciones[turnoId];
     log(`🔄 [${cancha.nombre}] Reiniciando como proceso combinado (stream+grab)…`);
-    setTimeout(() => _iniciarCombinado(turnoId, rec.filePath, rtspUrl, cancha.id, ytUrl, rec.startTime), 1000);
+    // Usar path distinto para evitar que el proceso viejo (finalizando moov) y el nuevo escriban al mismo archivo
+    const combinedPath = rec.filePath.replace(".mp4", "_c.mp4");
+    setTimeout(() => _iniciarCombinado(turnoId, combinedPath, rtspUrl, cancha.id, ytUrl, rec.startTime), 3000);
     return;
   }
 
