@@ -176,7 +176,7 @@ function iniciarGrabacion(turnoId, filePath, rtspUrl) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 
   const args = ffmpegArgs(rtspUrl, ["-movflags", "+faststart", "-y", filePath]);
-  const proc = spawn("ffmpeg", args, { stdio: "ignore" });
+  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
   grabaciones[turnoId] = { proceso: proc, filePath, startTime: Date.now() };
 
   proc.on("close", (code) => {
