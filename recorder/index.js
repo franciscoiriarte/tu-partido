@@ -202,19 +202,25 @@ function iniciarGrabacion(turnoId, filePath, rtspUrl, canchaId) {
   log(`🎥 Grabando turno ${turnoId}`);
 }
 
-// Un solo proceso ffmpeg con tee: graba al archivo Y transmite a YouTube
+// Un solo proceso ffmpeg con dos salidas: graba al archivo Y transmite a YouTube
 function _iniciarCombinado(turnoId, filePath, rtspUrl, canchaId, ytUrl, startTime = Date.now()) {
   const input = (!rtspUrl || rtspUrl === "avfoundation")
     ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0"]
     : ["-rtsp_transport", "tcp", "-i", rtspUrl];
-  const encode = [
+  const encodeBase = [
     "-c:v", "libx264", "-preset", "veryfast",
     "-b:v", "1500k", "-maxrate", "1500k", "-bufsize", "3000k",
-    "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-g", "60",
+    "-pix_fmt", "yuv420p", "-g", "60",
     "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
   ];
-  const teeOut = `[f=flv]${ytUrl}|[f=mp4:movflags=+faststart]${filePath}`;
-  const proc = spawn("ffmpeg", [...input, ...encode, "-f", "tee", "-y", teeOut], {
+  const args = [
+    ...input,
+    // Salida 1: stream a YouTube
+    ...encodeBase, "-tune", "zerolatency", "-f", "flv", ytUrl,
+    // Salida 2: grabación al archivo
+    ...encodeBase, "-movflags", "+faststart", "-y", filePath,
+  ];
+  const proc = spawn("ffmpeg", args, {
     stdio: ["ignore", "ignore", "inherit"],
   });
 
