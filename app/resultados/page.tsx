@@ -94,7 +94,7 @@ export default async function ResultadosPage({
 
           {turno.video_url ? (
             <div>
-              <video src={turno.video_url} controls className="w-full mb-3 rounded" />
+              <video src={turno.video_url} controls playsInline className="w-full mb-3 rounded" />
               <a
                 href={`/api/download?url=${encodeURIComponent(turno.video_url)}&filename=partido-${turno.id}.mp4`}
                 className="block text-center py-3 text-sm font-semibold rounded"
