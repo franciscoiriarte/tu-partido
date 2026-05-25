@@ -94,7 +94,9 @@ export default async function ResultadosPage({
 
           {turno.video_url ? (
             <div>
-              <video src={turno.video_url} controls playsInline className="w-full mb-3 rounded" />
+              <video controls playsInline preload="metadata" className="w-full mb-3 rounded">
+                <source src={turno.video_url} type="video/mp4" />
+              </video>
               <a
                 href={`/api/download?url=${encodeURIComponent(turno.video_url)}&filename=partido-${turno.id}.mp4`}
                 className="block text-center py-3 text-sm font-semibold rounded"
@@ -116,12 +118,9 @@ export default async function ResultadosPage({
               <div className="grid grid-cols-2 gap-2">
                 {turno.clips.map((clip, i) => (
                   <div key={clip.id} className="rounded overflow-hidden" style={{ background: "var(--surface)" }}>
-                    <video
-                      src={clip.clip_url!}
-                      controls
-                      playsInline
-                      className="w-full"
-                    />
+                    <video controls playsInline preload="metadata" className="w-full">
+                      <source src={clip.clip_url!} type="video/mp4" />
+                    </video>
                     <div className="flex items-center justify-between px-2 py-2 gap-2">
                       <p className="text-white/40 text-xs">#{i + 1}</p>
                       <div className="flex gap-2">
