@@ -148,6 +148,7 @@ export default async function ResultadosPage({
                         <ShareButton
                           url={clip.clip_url!}
                           text={`Mirá este highlight de mi partido 🎾`}
+                          compact
                         />
                       </div>
                     </div>
