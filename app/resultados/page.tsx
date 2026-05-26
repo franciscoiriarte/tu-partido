@@ -2,6 +2,7 @@ import { createClient } from "@/utils/supabase/server";
 import Image from "next/image";
 import Link from "next/link";
 import ShareButton from "./ShareButton";
+import SaveButton from "./SaveButton";
 
 export default async function ResultadosPage({
   searchParams,
@@ -128,9 +129,9 @@ export default async function ResultadosPage({
                     <video controls playsInline preload="metadata" className="w-full">
                       <source src={clip.clip_url!} type="video/mp4" />
                     </video>
-                    <div className="flex items-center justify-between px-2 py-2 gap-2">
-                      <p className="text-white/40 text-xs">#{i + 1}</p>
-                      <div className="flex gap-2">
+                    <div className="px-2 py-2 flex flex-col gap-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-white/40 text-xs">#{i + 1}</p>
                         <a
                           href={`/editor?url=${encodeURIComponent(clip.clip_url!)}`}
                           className="text-xs font-semibold px-2 py-1 rounded"
@@ -138,17 +139,16 @@ export default async function ResultadosPage({
                         >
                           Editar
                         </a>
-                        <a
-                          href={`/api/download?url=${encodeURIComponent(clip.clip_url!)}&filename=highlight-${i + 1}.mp4`}
-                          className="text-xs font-semibold"
-                          style={{ color: "var(--accent)" }}
-                        >
-                          Descargar
-                        </a>
+                      </div>
+                      <div className="flex gap-1">
                         <ShareButton
                           url={clip.clip_url!}
                           text={`Mirá este highlight de mi partido 🎾`}
                           compact
+                        />
+                        <SaveButton
+                          url={clip.clip_url!}
+                          filename={`highlight-${i + 1}.mp4`}
                         />
                       </div>
                     </div>

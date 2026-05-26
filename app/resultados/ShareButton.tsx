@@ -17,10 +17,11 @@ export default function ShareButton({ url, text, compact = false }: { url: strin
       <button
         onClick={compartir}
         title="Compartir por WhatsApp"
-        className="flex items-center justify-center p-1 rounded"
-        style={{ background: "#25D366", color: "#fff", minWidth: 28, minHeight: 28 }}
+        className="flex-1 flex items-center justify-center gap-1 py-2 text-xs font-medium rounded"
+        style={{ background: "#25D366", color: "#fff" }}
       >
         <WaIcon />
+        WA
       </button>
     );
   }
