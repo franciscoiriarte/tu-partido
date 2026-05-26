@@ -1,6 +1,7 @@
 import { createClient } from "@/utils/supabase/server";
 import Image from "next/image";
 import Link from "next/link";
+import ShareButton from "./ShareButton";
 
 export default async function ResultadosPage({
   searchParams,
@@ -97,13 +98,19 @@ export default async function ResultadosPage({
               <video controls playsInline preload="metadata" className="w-full mb-3 rounded">
                 <source src={turno.video_url} type="video/mp4" />
               </video>
-              <a
-                href={`/api/download?url=${encodeURIComponent(turno.video_url)}&filename=partido-${turno.id}.mp4`}
-                className="block text-center py-3 text-sm font-semibold rounded"
-                style={{ background: "var(--accent)", color: "#fff" }}
-              >
-                Descargar video completo
-              </a>
+              <div className="flex gap-2">
+                <a
+                  href={`/api/download?url=${encodeURIComponent(turno.video_url)}&filename=partido-${turno.id}.mp4`}
+                  className="flex-1 block text-center py-3 text-sm font-semibold rounded"
+                  style={{ background: "var(--accent)", color: "#fff" }}
+                >
+                  Descargar video completo
+                </a>
+                <ShareButton
+                  url={turno.video_url}
+                  text={`Mirá el video de mi partido en Tu Partido 🎾`}
+                />
+              </div>
             </div>
           ) : (
             <p className="text-white/40 text-sm">El video estará disponible en breve.</p>
@@ -138,6 +145,10 @@ export default async function ResultadosPage({
                         >
                           Descargar
                         </a>
+                        <ShareButton
+                          url={clip.clip_url!}
+                          text={`Mirá este highlight de mi partido 🎾`}
+                        />
                       </div>
                     </div>
                   </div>
