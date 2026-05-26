@@ -21,7 +21,7 @@ export default function ShareButton({ url, text, compact = false }: { url: strin
         style={{ background: "#25D366", color: "#fff" }}
       >
         <WaIcon />
-        WA
+        WhatsApp
       </button>
     );
   }

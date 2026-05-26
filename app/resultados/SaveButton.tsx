@@ -35,7 +35,7 @@ export default function SaveButton({ url, filename }: { url: string; filename: s
       className="flex-1 flex items-center justify-center gap-1 py-2 text-xs font-medium rounded"
       style={{ background: "var(--surface)", color: "white", border: "1px solid var(--border)", opacity: loading ? 0.6 : 1 }}
     >
-      {loading ? "Descargando…" : "⬇ Guardar en fotos"}
+      {loading ? "Descargando…" : "Descargar"}
     </button>
   );
 }
