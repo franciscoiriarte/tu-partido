@@ -203,7 +203,7 @@ export default function Home() {
           <button
             type="submit"
             disabled={!puedeEnviar}
-            className="w-full py-3 bg-[#2D9D75] hover:bg-[#1D9E75] rounded-xl font-medium text-sm transition-colors disabled:opacity-30"
+            className="w-full py-3 bg-[#2D9D75] hover:bg-[#1D9E75] active:scale-95 rounded-xl font-medium text-sm transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
           >
             Ver mi partido
           </button>
