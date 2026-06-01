@@ -165,11 +165,16 @@ function iniciarGrabacionContinua(cancha) {
   proc.on("close", (code) => {
     delete grabacionesContinuas[cancha.id];
     if (code !== 0 && code !== 255) {
-      log(`⚠️  [${cancha.nombre}] grabación cerrada (${code}), reintentando en 10s…`);
-      setTimeout(() => {
-        const c = canchas.find((x) => x.id === cancha.id);
-        if (c && dentroDeHorario()) iniciarGrabacionContinua(c);
-      }, 10000);
+      log(`⚠️  [${cancha.nombre}] grabación cerrada (${code})`);
+      const esAv = !cancha.rtsp_url || cancha.rtsp_url === "avfoundation";
+      if (!esAv) {
+        // Para RTSP: reintentar en 15s
+        setTimeout(() => {
+          const c = canchas.find((x) => x.id === cancha.id);
+          if (c && dentroDeHorario()) iniciarGrabacionContinua(c);
+        }, 15000);
+      }
+      // Para avfoundation: tickGrabacion reintenta cada minuto (evita loop de cámara ocupada)
     }
   });
 
@@ -186,12 +191,20 @@ function detenerGrabacionContinua(cancha) {
 
 function tickGrabacion() {
   const debeGrabar = dentroDeHorario();
+
+  // Esta variable se actualiza dentro del loop para que solo una cancha avfoundation arranque por tick
+  let avFoundationOcupado = canchas.some(
+    (c) => grabacionesContinuas[c.id] && (!c.rtsp_url || c.rtsp_url === "avfoundation")
+  );
+
   for (const cancha of canchas) {
+    const esAv = !cancha.rtsp_url || cancha.rtsp_url === "avfoundation";
+
     if (debeGrabar && !grabacionesContinuas[cancha.id]) {
-      // No iniciar si hay un stream de YouTube activo en avfoundation
-      const esAv = !cancha.rtsp_url || cancha.rtsp_url === "avfoundation";
-      if (esAv && streamProcesses[cancha.id]) continue;
+      if (esAv && streamProcesses[cancha.id]) continue; // stream activo tiene prioridad
+      if (esAv && avFoundationOcupado) continue;        // otra cancha ya usa la cámara
       iniciarGrabacionContinua(cancha);
+      if (esAv) avFoundationOcupado = true;             // bloquear las siguientes en este tick
     } else if (!debeGrabar && grabacionesContinuas[cancha.id]) {
       detenerGrabacionContinua(cancha);
     }
