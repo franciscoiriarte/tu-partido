@@ -16,6 +16,17 @@ function generarDias() {
   });
 }
 
+function generarHoras() {
+  const slots: string[] = [];
+  for (let h = 8; h < 24; h++) {
+    slots.push(`${String(h).padStart(2, "0")}:00`);
+    slots.push(`${String(h).padStart(2, "0")}:30`);
+  }
+  return slots; // 08:00 … 23:30
+}
+
+const HORAS = generarHoras();
+
 const FEATURES = [
   "Instalación llave en mano sin obra civil",
   "Diferenciate de otros clubes de la zona",
@@ -34,85 +45,69 @@ const STREAMING_FEATS = [
 const STATS = [
   { num: "+40%", lbl: "Retención de socios" },
   { num: "24/7", lbl: "Grabación automática" },
-  { num: "48h", lbl: "Disponibilidad video" },
-  { num: "$0", lbl: "Costo del jugador" },
+  { num: "72h",  lbl: "Videos disponibles" },
+  { num: "$0",   lbl: "Costo del jugador" },
 ];
 
-type Turno = { hora_inicio: string; hora_fin: string };
+type Cancha = { id: string; nombre: string };
 
 export default function Home() {
   const router = useRouter();
-  const dias = generarDias();
+  const dias   = generarDias();
 
-  const [complejos, setComplejos] = useState<{ id: string; nombre: string }[]>([]);
-  const [complejo, setComplejo] = useState("");
-  const [dia, setDia] = useState(dias[0].valor);
-  const [hora, setHora] = useState("");
-  const [turnos, setTurnos] = useState<Turno[]>([]);
-  const [loadingTurnos, setLoadingTurnos] = useState(false);
+  const [complejos, setComplejos]   = useState<{ id: string; nombre: string }[]>([]);
+  const [complejoId, setComplejoId] = useState("");
+  const [canchas, setCanchas]       = useState<Cancha[]>([]);
+  const [canchaId, setCanchaId]     = useState("");
+  const [dia, setDia]               = useState(dias[0].valor);
+  const [horaInicio, setHoraInicio] = useState("");
+  const [horaFin, setHoraFin]       = useState("");
 
-  // Cargar complejos al inicio
+  // Cargar complejos
   useEffect(() => {
-    const supabase = createClient();
-    supabase
+    createClient()
       .from("complejos")
       .select("id, nombre")
       .order("nombre")
       .then(({ data }) => {
         if (data && data.length > 0) {
           setComplejos(data);
-          setComplejo(data[0].nombre);
+          setComplejoId(data[0].id);
         }
       });
   }, []);
 
-  // Cargar turnos reales cuando cambia complejo o día
+  // Cargar canchas cuando cambia el complejo
   useEffect(() => {
-    if (!complejo || !dia) return;
-    setHora("");
-    setTurnos([]);
-    setLoadingTurnos(true);
+    if (!complejoId) return;
+    setCanchaId("");
+    createClient()
+      .from("canchas")
+      .select("id, nombre")
+      .eq("complejo_id", complejoId)
+      .order("nombre")
+      .then(({ data }) => {
+        setCanchas(data ?? []);
+        if (data && data.length > 0) setCanchaId(data[0].id);
+      });
+  }, [complejoId]);
 
-    const supabase = createClient();
-    (async () => {
-      const { data: compData } = await supabase
-        .from("complejos")
-        .select("id")
-        .ilike("nombre", complejo)
-        .single();
+  // Resetear horaFin si queda antes de horaInicio
+  useEffect(() => {
+    if (horaFin && horaInicio && horaFin <= horaInicio) setHoraFin("");
+  }, [horaInicio]);
 
-      if (!compData) { setLoadingTurnos(false); return; }
-
-      const { data: canchas } = await supabase
-        .from("canchas")
-        .select("id")
-        .eq("complejo_id", compData.id);
-
-      if (!canchas || canchas.length === 0) { setLoadingTurnos(false); return; }
-
-      const { data: turnosData } = await supabase
-        .from("turnos")
-        .select("hora_inicio, hora_fin")
-        .in("cancha_id", canchas.map((c) => c.id))
-        .eq("fecha", dia)
-        .order("hora_inicio");
-
-      // Deduplicar por hora_inicio
-      const unicos = [
-        ...new Map((turnosData ?? []).map((t) => [t.hora_inicio, t])).values(),
-      ];
-      setTurnos(unicos);
-      setLoadingTurnos(false);
-    })();
-  }, [complejo, dia]);
+  const horasFin = ["00:00", ...HORAS.filter((h) => !horaInicio || h > horaInicio)];
 
   function handleBuscar(e: React.FormEvent) {
     e.preventDefault();
-    if (!complejo || !dia || !hora) return;
+    if (!canchaId || !dia || !horaInicio || !horaFin) return;
     router.push(
-      `/resultados?complejo=${encodeURIComponent(complejo)}&fecha=${dia}&hora=${hora}`
+      `/resultados?cancha=${canchaId}&fecha=${dia}&inicio=${horaInicio}&fin=${horaFin}`
     );
   }
+
+  const puedeEnviar = Boolean(canchaId && dia && horaInicio && horaFin);
 
   return (
     <main className="min-h-screen bg-[#0a1f1a] text-white">
@@ -121,7 +116,7 @@ export default function Home() {
         <Brand />
         <h1 className="text-3xl font-medium mt-6 mb-2">Reviví tu partido.</h1>
         <p className="text-sm text-white/55 mb-6">
-          Encontrá el video de tu turno y compartilo en segundos.
+          Elegí tu cancha y el horario — el video te espera listo.
         </p>
 
         <form
@@ -134,10 +129,22 @@ export default function Home() {
             <p className="text-xs text-white/30 mb-4">Cargando…</p>
           ) : (
             <ChipRow
-              items={complejos.map((c) => c.nombre)}
-              active={complejo}
-              onSelect={setComplejo}
+              items={complejos.map((c) => ({ id: c.id, label: c.nombre }))}
+              activeId={complejoId}
+              onSelect={setComplejoId}
             />
+          )}
+
+          {/* Cancha */}
+          {canchas.length > 0 && (
+            <>
+              <Label>Cancha</Label>
+              <ChipRow
+                items={canchas.map((c) => ({ id: c.id, label: c.nombre }))}
+                activeId={canchaId}
+                onSelect={setCanchaId}
+              />
+            </>
           )}
 
           {/* Día */}
@@ -159,43 +166,54 @@ export default function Home() {
             ))}
           </div>
 
-          {/* Horario — chips con turnos reales */}
-          <Label>Horario</Label>
-          {loadingTurnos ? (
-            <p className="text-xs text-white/30 mb-4">Cargando turnos…</p>
-          ) : turnos.length === 0 ? (
-            <p className="text-xs text-white/30 mb-4">
-              {complejo ? "No hay turnos para este día." : "Seleccioná un complejo."}
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2 mb-4">
-              {turnos.map((t) => {
-                const label = `${t.hora_inicio.slice(0, 5)} – ${t.hora_fin.slice(0, 5)}`;
-                const val = t.hora_inicio.slice(0, 5);
-                return (
+          {/* Hora inicio */}
+          <Label>Hora de inicio</Label>
+          <div className="flex flex-wrap gap-1.5 mb-4">
+            {HORAS.map((h) => (
+              <button
+                key={h}
+                type="button"
+                onClick={() => setHoraInicio(h)}
+                className={`px-2.5 py-1.5 border rounded-md text-xs transition-all ${
+                  horaInicio === h
+                    ? "bg-[#2D9D75] border-[#2D9D75] text-white"
+                    : "bg-white/[0.04] border-white/10 text-white/60 hover:text-white hover:border-[#5DCAA5]/30"
+                }`}
+              >
+                {h}
+              </button>
+            ))}
+          </div>
+
+          {/* Hora fin */}
+          {horaInicio && (
+            <>
+              <Label>Hora de fin</Label>
+              <div className="flex flex-wrap gap-1.5 mb-4">
+                {horasFin.map((h) => (
                   <button
-                    key={t.hora_inicio}
+                    key={h}
                     type="button"
-                    onClick={() => setHora(val)}
-                    className={`px-3 py-2 border rounded-lg text-xs transition-all ${
-                      hora === val
+                    onClick={() => setHoraFin(h)}
+                    className={`px-2.5 py-1.5 border rounded-md text-xs transition-all ${
+                      horaFin === h
                         ? "bg-[#2D9D75] border-[#2D9D75] text-white"
-                        : "bg-white/[0.04] border-white/10 text-white/70 hover:text-white hover:border-[#5DCAA5]/30"
+                        : "bg-white/[0.04] border-white/10 text-white/60 hover:text-white hover:border-[#5DCAA5]/30"
                     }`}
                   >
-                    {label}
+                    {h === "00:00" ? "00:00 (medianoche)" : h}
                   </button>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            </>
           )}
 
           <button
             type="submit"
-            disabled={!complejo || !dia || !hora}
+            disabled={!puedeEnviar}
             className="w-full py-3 bg-[#2D9D75] hover:bg-[#1D9E75] rounded-xl font-medium text-sm transition-colors disabled:opacity-30"
           >
-            Buscar mi partido
+            Ver mi partido
           </button>
         </form>
       </section>
@@ -206,11 +224,11 @@ export default function Home() {
         <h2 className="text-2xl font-medium text-center mb-6">Tres pasos y listo</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-4xl mx-auto">
           <StepCard icon={<CameraIcon />} num="PASO 01" title="Jugás tu partido"
-            desc="Las cámaras graban automático cada turno en el complejo." />
-          <StepCard icon={<SearchIcon />} num="PASO 02" title="Buscás tu turno"
-            desc="Ingresás complejo, día y hora. Sin registro, sin login." />
-          <StepCard icon={<DownloadIcon />} num="PASO 03" title="Lo ves y descargás"
-            desc="Mirá tu partido completo y los highlights, gratis." />
+            desc="Las cámaras graban sin parar todo el día, sin que nadie tenga que hacer nada." />
+          <StepCard icon={<SearchIcon />} num="PASO 02" title="Elegís el horario"
+            desc="Seleccionás tu cancha, el día y de qué hora a qué hora jugaste." />
+          <StepCard icon={<DownloadIcon />} num="PASO 03" title="Lo ves y compartís"
+            desc="El video queda listo en minutos. Descargalo o mandalo por WhatsApp." />
         </div>
       </section>
 
@@ -283,7 +301,29 @@ export default function Home() {
   );
 }
 
-/* ── Mock Player ── */
+/* ── Shared UI ── */
+
+function ChipRow({ items, activeId, onSelect }: { items: { id: string; label: string }[]; activeId: string; onSelect: (id: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-2 mb-4">
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          onClick={() => onSelect(item.id)}
+          className={`px-3 py-2 border rounded-lg text-xs transition-all ${
+            activeId === item.id
+              ? "bg-[#2D9D75] border-[#2D9D75] text-white"
+              : "bg-white/[0.04] border-white/10 text-white/70 hover:text-white hover:border-[#5DCAA5]/30"
+          }`}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MockPlayer() {
   return (
     <div className="aspect-video bg-[#111] rounded-xl relative overflow-hidden border border-white/10">
@@ -336,7 +376,6 @@ function MockPlayer() {
   );
 }
 
-/* ── Shared UI ── */
 function Brand() {
   return (
     <div className="inline-flex items-center gap-1">
@@ -355,33 +394,10 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <p className="text-[10px] tracking-widest text-[#5DCAA5] uppercase text-center mb-1 font-medium">{children}</p>;
 }
 
-function ChipRow({ items, active, onSelect }: { items: string[]; active: string; onSelect: (v: string) => void }) {
-  return (
-    <div className="flex flex-wrap gap-2 mb-4">
-      {items.map((item) => (
-        <button
-          key={item}
-          type="button"
-          onClick={() => onSelect(item)}
-          className={`px-3 py-2 border rounded-lg text-xs transition-all ${
-            active === item
-              ? "bg-[#2D9D75] border-[#2D9D75] text-white"
-              : "bg-white/[0.04] border-white/10 text-white/70 hover:text-white hover:border-[#5DCAA5]/30"
-          }`}
-        >
-          {item}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function StepCard({ icon, num, title, desc }: { icon: React.ReactNode; num: string; title: string; desc: string }) {
   return (
     <div className="bg-white/[0.03] border border-white/10 rounded-xl p-5 transition-all hover:border-[#5DCAA5]/40 hover:bg-[#2D9D75]/[0.05] hover:-translate-y-0.5">
-      <div className="w-10 h-10 rounded-full bg-[#2D9D75]/15 flex items-center justify-center mb-3">
-        {icon}
-      </div>
+      <div className="w-10 h-10 rounded-full bg-[#2D9D75]/15 flex items-center justify-center mb-3">{icon}</div>
       <p className="text-[11px] text-[#5DCAA5] font-semibold tracking-wider mb-1">{num}</p>
       <p className="text-sm font-medium mb-1">{title}</p>
       <p className="text-xs text-white/55 leading-relaxed">{desc}</p>

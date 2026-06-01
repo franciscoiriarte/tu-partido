@@ -1,17 +1,18 @@
 import { createClient } from "@/utils/supabase/server";
 import Image from "next/image";
 import Link from "next/link";
+import ClipStatusPoller from "./ClipStatusPoller";
 import ShareButton from "./ShareButton";
 import SaveButton from "./SaveButton";
 
 export default async function ResultadosPage({
   searchParams,
 }: {
-  searchParams: Promise<{ complejo?: string; fecha?: string; hora?: string }>;
+  searchParams: Promise<{ cancha?: string; fecha?: string; inicio?: string; fin?: string }>;
 }) {
-  const { complejo = "", fecha = "", hora = "" } = await searchParams;
+  const { cancha: canchaId = "", fecha = "", inicio = "", fin = "" } = await searchParams;
 
-  if (!complejo || !fecha || !hora) {
+  if (!canchaId || !fecha || !inicio || !fin) {
     return (
       <main className="min-h-screen px-4 py-8 max-w-lg mx-auto" style={{ background: "var(--background)" }}>
         <Link href="/" className="text-sm text-white/40 underline mb-8 block">← Volver</Link>
@@ -22,50 +23,40 @@ export default async function ResultadosPage({
 
   const supabase = await createClient();
 
-  const { data: complejos } = await supabase
-    .from("complejos")
-    .select("id, nombre")
-    .ilike("nombre", `%${complejo}%`);
+  // Cargar datos de la cancha
+  const { data: cancha } = await supabase
+    .from("canchas")
+    .select("id, nombre, complejo_id, complejos(nombre)")
+    .eq("id", canchaId)
+    .single();
 
-  const complejoIds = (complejos ?? []).map((c) => c.id);
+  // Buscar pedido existente (listo o en proceso)
+  const { data: pedidoExistente } = await supabase
+    .from("clip_requests")
+    .select("*")
+    .eq("cancha_id", canchaId)
+    .eq("fecha", fecha)
+    .eq("hora_inicio", inicio)
+    .eq("hora_fin", fin)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  const { data: canchas } =
-    complejoIds.length > 0
-      ? await supabase.from("canchas").select("id, nombre, complejo_id").in("complejo_id", complejoIds)
-      : { data: [] };
+  // Si hay uno con error, crear uno nuevo
+  let pedido = pedidoExistente?.status !== "error" ? pedidoExistente : null;
 
-  const canchaIds = (canchas ?? []).map((c) => c.id);
+  if (!pedido) {
+    const { data: nuevo } = await supabase
+      .from("clip_requests")
+      .insert({ cancha_id: canchaId, fecha, hora_inicio: inicio, hora_fin: fin })
+      .select()
+      .single();
+    pedido = nuevo;
+  }
 
-  const { data: turnos } =
-    canchaIds.length > 0
-      ? await supabase
-          .from("turnos")
-          .select("id, hora_inicio, hora_fin, video_url, cancha_id")
-          .in("cancha_id", canchaIds)
-          .eq("fecha", fecha)
-          .lte("hora_inicio", hora)
-          .gt("hora_fin", hora)
-          .order("hora_inicio")
-      : { data: [] };
-
-  const turnoIds = (turnos ?? []).map((t) => t.id);
-
-  const { data: highlights } =
-    turnoIds.length > 0
-      ? await supabase
-          .from("highlights")
-          .select("id, turno_id, clip_url")
-          .in("turno_id", turnoIds)
-          .not("clip_url", "is", null)
-          .order("created_at")
-      : { data: [] };
-
-  const resultados = (turnos ?? []).map((t) => {
-    const cancha = (canchas ?? []).find((c) => c.id === t.cancha_id);
-    const comp = (complejos ?? []).find((co) => co.id === cancha?.complejo_id);
-    const clips = (highlights ?? []).filter((h) => h.turno_id === t.id);
-    return { ...t, cancha_nombre: cancha?.nombre ?? "", complejo_nombre: comp?.nombre ?? "", clips };
-  });
+  // @ts-ignore - complejos puede ser array o objeto según la query
+  const complejoNombre = cancha?.complejos?.nombre ?? cancha?.complejos?.[0]?.nombre ?? "";
+  const canchaNombre   = cancha?.nombre ?? "";
 
   return (
     <main className="min-h-screen px-4 py-8 max-w-lg mx-auto" style={{ background: "var(--background)" }}>
@@ -73,92 +64,36 @@ export default async function ResultadosPage({
 
       <div className="flex items-center gap-3 mb-8">
         <Image src="/logo.png" alt="Tu Partido" width={40} height={40} />
-        {resultados.length > 0 && (
-          <div>
-            <p className="text-white font-semibold">{resultados[0].complejo_nombre}</p>
-            <p className="text-white/40 text-sm">{fecha} — {hora}</p>
-          </div>
-        )}
+        <div>
+          <p className="text-white font-semibold">{complejoNombre}</p>
+          <p className="text-white/40 text-sm">
+            {canchaNombre} · {fecha} · {inicio.slice(0, 5)}–{fin.slice(0, 5)}
+          </p>
+        </div>
       </div>
 
-      {resultados.length === 0 && (
-        <p className="text-white/60 text-base">
-          No encontramos ningún partido para esa fecha y hora.
-        </p>
-      )}
-
-      {resultados.map((turno) => (
-        <div key={turno.id} className="mb-8 pb-8 border-b" style={{ borderColor: "var(--border)" }}>
-          <p className="text-white/40 text-sm mb-1">{turno.cancha_nombre}</p>
-          <p className="text-white font-medium mb-4">
-            {turno.hora_inicio.slice(0, 5)} — {turno.hora_fin.slice(0, 5)}
-          </p>
-
-          {turno.video_url ? (
-            <div>
-              <video controls playsInline preload="metadata" className="w-full mb-3 rounded">
-                <source src={turno.video_url} type="video/mp4" />
-              </video>
-              <div className="flex gap-2">
-                <a
-                  href={`/api/download?url=${encodeURIComponent(turno.video_url)}&filename=partido-${turno.id}.mp4`}
-                  className="flex-1 block text-center py-3 text-sm font-semibold rounded"
-                  style={{ background: "var(--accent)", color: "#fff" }}
-                >
-                  Descargar video completo
-                </a>
-                <ShareButton
-                  url={turno.video_url}
-                  text={`Mirá el video de mi partido en Tu Partido 🎾`}
-                />
-              </div>
-            </div>
-          ) : (
-            <p className="text-white/40 text-sm">El video estará disponible en breve.</p>
-          )}
-
-          {/* Highlights */}
-          {turno.clips.length > 0 && (
-            <div className="mt-6">
-              <p className="text-white/40 text-xs uppercase tracking-widest mb-3">
-                Highlights · {turno.clips.length} jugada{turno.clips.length > 1 ? "s" : ""}
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                {turno.clips.map((clip, i) => (
-                  <div key={clip.id} className="rounded overflow-hidden" style={{ background: "var(--surface)" }}>
-                    <video controls playsInline preload="metadata" className="w-full">
-                      <source src={clip.clip_url!} type="video/mp4" />
-                    </video>
-                    <div className="px-2 py-2 flex flex-col gap-2">
-                      <div className="flex items-center justify-between">
-                        <p className="text-white/40 text-xs">#{i + 1}</p>
-                        <a
-                          href={`/editor?url=${encodeURIComponent(clip.clip_url!)}`}
-                          className="text-xs font-semibold px-2 py-1 rounded"
-                          style={{ background: "var(--surface)", color: "white", border: "1px solid var(--border)" }}
-                        >
-                          Editar
-                        </a>
-                      </div>
-                      <div className="flex gap-1">
-                        <ShareButton
-                          url={clip.clip_url!}
-                          text={`Mirá este highlight de mi partido 🎾`}
-                          compact
-                        />
-                        <SaveButton
-                          url={clip.clip_url!}
-                          filename={`highlight-${i + 1}.mp4`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+      {pedido?.status === "ready" && pedido.video_url ? (
+        <div>
+          <video controls playsInline preload="metadata" className="w-full mb-3 rounded">
+            <source src={pedido.video_url} type="video/mp4" />
+          </video>
+          <div className="flex gap-2">
+            <a
+              href={`/api/download?url=${encodeURIComponent(pedido.video_url)}&filename=partido-${fecha}.mp4`}
+              className="flex-1 block text-center py-3 text-sm font-semibold rounded"
+              style={{ background: "var(--accent)", color: "#fff" }}
+            >
+              Descargar video completo
+            </a>
+            <ShareButton
+              url={pedido.video_url}
+              text={`Mirá el video de mi partido en Tu Partido 🎾`}
+            />
+          </div>
         </div>
-      ))}
+      ) : (
+        <ClipStatusPoller pedidoId={pedido?.id ?? null} initialStatus={pedido?.status ?? "pending"} />
+      )}
     </main>
   );
 }

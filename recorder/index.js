@@ -5,6 +5,7 @@ const { Upload } = require("@aws-sdk/lib-storage");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 
 // ── Clientes ──────────────────────────────────────────────────────────────────
 
@@ -22,35 +23,23 @@ const r2 = new S3Client({
   },
 });
 
-const COMPLEJO_ID = process.env.COMPLEJO_ID;
-const TMP_DIR = process.env.TMP_DIR || "/tmp/tu-partido";
-const R2_BUCKET = process.env.R2_BUCKET;
-const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
-const ASSETS_DIR = process.env.ASSETS_DIR || path.join(__dirname, "assets");
+const COMPLEJO_ID    = process.env.COMPLEJO_ID;
+const TMP_DIR        = process.env.TMP_DIR        || "/tmp/tu-partido";
+const RECORDINGS_DIR = process.env.RECORDINGS_DIR || path.join(os.homedir(), "tu-partido-recordings");
+const R2_BUCKET      = process.env.R2_BUCKET;
+const R2_PUBLIC_URL  = process.env.R2_PUBLIC_URL;
+const ASSETS_DIR     = process.env.ASSETS_DIR     || path.join(__dirname, "assets");
 
 // ── Estado ────────────────────────────────────────────────────────────────────
 
-let canchas = []; // cargadas desde Supabase al iniciar
-const grabaciones = {}; // turnoId → { proceso, filePath, startTime }
-const streamProcesses = {}; // canchaId → { proceso, confirmTimer }
-let timeouts = [];
+let canchas = [];
+const grabacionesContinuas = {}; // canchaId → ffmpeg process
+const streamProcesses      = {}; // canchaId → { proceso, confirmTimer }
 
 // ── Utilidades ────────────────────────────────────────────────────────────────
 
 function log(msg) {
-  const hora = new Date().toLocaleTimeString("es-AR");
-  console.log(`[${hora}] ${msg}`);
-}
-
-function horaASegundos(horaStr) {
-  const [h, m, s] = horaStr.split(":").map(Number);
-  return h * 3600 + m * 60 + (s || 0);
-}
-
-function segundosAHora(seg) {
-  const h = Math.floor(seg / 3600);
-  const m = Math.floor((seg % 3600) / 60);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
+  console.log(`[${new Date().toLocaleTimeString("es-AR")}] ${msg}`);
 }
 
 function horaAMs(horaStr) {
@@ -65,223 +54,15 @@ function msHastaHora(horaStr) {
   return medianoche.getTime() + horaAMs(horaStr) - ahora;
 }
 
-function ffmpegArgs(rtspUrl, output) {
-  const encode = [
-    "-c:v", "libx264", "-preset", "veryfast", "-maxrate", "1500k", "-bufsize", "3000k",
-    "-pix_fmt", "yuv420p", "-g", "60",
-    "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-    ...output,
-  ];
-  return rtspUrl === "avfoundation"
-    ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0", ...encode]
-    : ["-rtsp_transport", "tcp", "-i", rtspUrl, ...encode];
-}
-
-// ── Cargar canchas ────────────────────────────────────────────────────────────
-
-async function cargarCanchas() {
-  const { data, error } = await supabase
-    .from("canchas")
-    .select("id, nombre, rtsp_url, youtube_stream_key")
-    .eq("complejo_id", COMPLEJO_ID);
-
-  if (error) {
-    log(`❌ Error cargando canchas: ${error.message}`);
-    return;
-  }
-  canchas = data ?? [];
-  log(`🏟️  ${canchas.length} cancha(s) cargadas: ${canchas.map((c) => c.nombre).join(", ")}`);
-}
-
-// ── Generador de turnos desde horario tipo ────────────────────────────────────
-
-function generarSlots(horaInicio, horaFin, duracionMin) {
-  const slots = [];
-  let actual = horaASegundos(horaInicio);
-  const fin = horaASegundos(horaFin);
-  const dur = duracionMin * 60;
-  while (actual + dur <= fin) {
-    slots.push({ inicio: segundosAHora(actual), fin: segundosAHora(actual + dur) });
-    actual += dur;
-  }
-  return slots;
-}
-
-async function crearTurnosDesdeHorario() {
-  const hoy = new Date().toLocaleDateString("en-CA");
-  const diaSemana = new Date().getDay();
-
-  for (const cancha of canchas) {
-    const { data: horario } = await supabase
-      .from("horarios")
-      .select("hora_inicio, hora_fin, duracion_min")
-      .eq("cancha_id", cancha.id)
-      .eq("dia_semana", diaSemana)
-      .single();
-
-    if (!horario) continue;
-
-    const slots = generarSlots(horario.hora_inicio, horario.hora_fin, horario.duracion_min);
-
-    const { data: existentes } = await supabase
-      .from("turnos")
-      .select("hora_inicio")
-      .eq("cancha_id", cancha.id)
-      .eq("fecha", hoy);
-
-    const horasExistentes = new Set((existentes ?? []).map((t) => t.hora_inicio));
-    const nuevos = slots
-      .filter((s) => !horasExistentes.has(s.inicio))
-      .map((s) => ({ cancha_id: cancha.id, fecha: hoy, hora_inicio: s.inicio, hora_fin: s.fin }));
-
-    if (nuevos.length > 0) {
-      await supabase.from("turnos").insert(nuevos);
-      log(`📅 [${cancha.nombre}] Creados ${nuevos.length} turno(s) automáticos`);
-    }
-  }
-}
-
-// ── Marcador ──────────────────────────────────────────────────────────────────
-
-const SCORE_FILE = path.join(TMP_DIR, "score.txt");
-let pollingMarcador = null;
-
-function formatearMarcador(m) {
-  const sets = (m.sets ?? []).slice(0, -1).map((s) => `${s.a}-${s.b}`).join("  ");
-  const setActual = (m.sets ?? []).at(-1);
-  const juegoActual = setActual ? `${setActual.a}-${setActual.b}` : "";
-  const puntos = `${m.puntos_a ?? "0"} - ${m.puntos_b ?? "0"}`;
-  const nombres = `${m.equipo_a ?? "A"}  vs  ${m.equipo_b ?? "B"}`;
-  return `${nombres}    ${sets}  [${juegoActual}]  ${puntos}`;
-}
-
-async function actualizarScoreFile(turnoId) {
-  try {
-    const { data } = await supabase.from("marcadores").select("*").eq("turno_id", turnoId).single();
-    if (data) {
-      fs.mkdirSync(TMP_DIR, { recursive: true });
-      fs.writeFileSync(SCORE_FILE, formatearMarcador(data));
-    }
-  } catch (_) {}
-}
-
-function detenerPollingMarcador() {
-  if (pollingMarcador) { clearInterval(pollingMarcador); pollingMarcador = null; }
-}
-
-// ── Grabación ─────────────────────────────────────────────────────────────────
-
-function iniciarGrabacion(turnoId, filePath, rtspUrl, canchaId) {
-  if (grabaciones[turnoId]) return;
-  fs.mkdirSync(TMP_DIR, { recursive: true });
-
-  // Para avfoundation: la grabación tiene prioridad — detener stream si está activo
-  const streamEntry = streamProcesses[canchaId];
-  const esAvFoundation = !rtspUrl || rtspUrl === "avfoundation";
-  if (streamEntry && esAvFoundation) {
-    const cancha = canchas.find((c) => c.id === canchaId);
-    if (cancha) detenerStream(cancha);
-    // Esperar que el proceso del stream muera antes de abrir la cámara
-    setTimeout(() => iniciarGrabacion(turnoId, filePath, rtspUrl, canchaId), 1500);
-    return;
-  }
-
-  const args = ffmpegArgs(rtspUrl, ["-movflags", "+faststart", "-y", filePath]);
-  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
-  grabaciones[turnoId] = { proceso: proc, filePath, startTime: Date.now(), canchaId };
-
-  proc.on("close", (code) => {
-    if (code !== 0 && grabaciones[turnoId]) {
-      log(`⚠️  ffmpeg terminó inesperadamente (turno ${turnoId}, código ${code})`);
-    }
+function ffmpegRun(args) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
+    proc.on("close", (code) => {
+      if (code !== 0) reject(new Error(`ffmpeg salió con código ${code}`));
+      else resolve();
+    });
   });
-
-  log(`🎥 Grabando turno ${turnoId}`);
 }
-
-// ── Stream manual en vivo ─────────────────────────────────────────────────────
-
-async function setStreamActivo(canchaId, valor) {
-  await supabase.from("canchas").update({ stream_activo: valor }).eq("id", canchaId);
-}
-
-function iniciarStream(cancha) {
-  if (streamProcesses[cancha.id]) return;
-  if (!cancha.youtube_stream_key) {
-    log(`⚠️  [${cancha.nombre}] Sin youtube_stream_key — configuralo en Supabase`);
-    return;
-  }
-
-  const ytUrl = `rtmp://a.rtmp.youtube.com/live2/${cancha.youtube_stream_key}`;
-  const rtspUrl = cancha.rtsp_url || "avfoundation";
-  const esAvFoundation = !rtspUrl || rtspUrl === "avfoundation";
-
-  // Para avfoundation: si hay turno grabando, la grabación tiene prioridad — el stream espera
-  if (esAvFoundation && Object.values(grabaciones).some((rec) => rec.canchaId === cancha.id)) {
-    log(`⏳ [${cancha.nombre}] Turno en curso — stream diferido hasta que termine`);
-    return;
-  }
-
-  const args = ffmpegArgs(rtspUrl, [
-    "-b:v", "1500k", "-tune", "zerolatency", "-f", "flv", ytUrl,
-  ]);
-
-  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
-
-  const confirmTimer = setTimeout(() => {
-    if (streamProcesses[cancha.id]) {
-      setStreamActivo(cancha.id, true);
-      log(`✅ Stream confirmado → YouTube [${cancha.nombre}]`);
-    }
-  }, 10000);
-
-  proc.on("close", (code) => {
-    clearTimeout(confirmTimer);
-    setStreamActivo(cancha.id, false);
-    delete streamProcesses[cancha.id];
-    if (code !== 0 && code !== 255) {
-      log(`⚠️  Stream [${cancha.nombre}] terminó con error (código ${code})`);
-    }
-  });
-
-  streamProcesses[cancha.id] = { proceso: proc, confirmTimer, ytUrl };
-  log(`🔴 Conectando a YouTube... [${cancha.nombre}]`);
-}
-
-function detenerStream(cancha) {
-  const entry = streamProcesses[cancha.id];
-  if (!entry) return;
-  clearTimeout(entry.confirmTimer);
-  entry.proceso.kill("SIGTERM");
-  delete streamProcesses[cancha.id];
-  setStreamActivo(cancha.id, false);
-  log(`⏹️  Stream detenido [${cancha.nombre}]`);
-}
-
-async function verificarStreams() {
-  if (canchas.length === 0) return;
-
-  const ids = canchas.map((c) => c.id);
-  const { data } = await supabase
-    .from("canchas")
-    .select("id, nombre, rtsp_url, youtube_stream_key, transmitiendo")
-    .in("id", ids);
-
-  if (!data) return;
-
-  // Actualizar cache local con datos frescos
-  canchas = canchas.map((c) => ({ ...c, ...(data.find((d) => d.id === c.id) ?? {}) }));
-
-  for (const cancha of canchas) {
-    if (cancha.transmitiendo && !streamProcesses[cancha.id]) {
-      iniciarStream(cancha);
-    } else if (!cancha.transmitiendo && streamProcesses[cancha.id]) {
-      detenerStream(cancha);
-    }
-  }
-}
-
-// ── Subida R2 ─────────────────────────────────────────────────────────────────
 
 async function subirR2(key, filePath) {
   const fileStream = fs.createReadStream(filePath);
@@ -293,32 +74,6 @@ async function subirR2(key, filePath) {
   });
   await upload.done();
   return `${R2_PUBLIC_URL}/${key}`;
-}
-
-// ── Branding ──────────────────────────────────────────────────────────────────
-
-function ffmpegRun(args) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
-    proc.on("close", (code) => {
-      if (code !== 0) reject(new Error(`ffmpeg salió con código ${code}`));
-      else resolve();
-    });
-  });
-}
-
-async function aplicarZocalo(inputPath, outputPath) {
-  const zocaloPath = path.join(ASSETS_DIR, "zocalo.png");
-  if (!fs.existsSync(zocaloPath)) { fs.renameSync(inputPath, outputPath); return; }
-  log("🎨 Aplicando zócalo…");
-  await ffmpegRun([
-    "-i", inputPath, "-i", zocaloPath,
-    "-filter_complex", "[0:v][1:v]overlay=x=0:y=H-h[v]",
-    "-map", "[v]", "-map", "0:a?",
-    "-c:v", "libx264", "-crf", "26", "-preset", "fast",
-    "-c:a", "aac", "-movflags", "+faststart", "-y", outputPath,
-  ]);
-  fs.unlinkSync(inputPath);
 }
 
 async function tieneAudio(filePath) {
@@ -333,163 +88,216 @@ async function tieneAudio(filePath) {
   });
 }
 
-async function normalizarAsset(srcPath) {
-  const normPath = srcPath.replace(".mp4", "_norm.mp4");
-  if (fs.existsSync(normPath) && fs.statSync(normPath).mtimeMs > fs.statSync(srcPath).mtimeMs) return normPath;
-  log(`🔧 Normalizando ${path.basename(srcPath)}…`);
-  const conAudio = await tieneAudio(srcPath);
-  const args = conAudio
-    ? ["-i", srcPath, "-c:v", "libx264", "-crf", "26", "-preset", "fast",
-       "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30",
-       "-c:a", "aac", "-ar", "44100", "-ac", "2",
-       "-map", "0:v", "-map", "0:a", "-movflags", "+faststart", "-y", normPath]
-    : ["-i", srcPath, "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-       "-c:v", "libx264", "-crf", "26", "-preset", "fast",
-       "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30",
-       "-c:a", "aac", "-ar", "44100", "-ac", "2",
-       "-map", "0:v", "-map", "1:a", "-shortest", "-movflags", "+faststart", "-y", normPath];
-  await ffmpegRun(args);
-  return normPath;
-}
-
-async function agregarIntroOutro(inputPath, outputPath) {
-  const introPath = path.join(ASSETS_DIR, "intro.mp4");
-  const outroPath = path.join(ASSETS_DIR, "outro.mp4");
-  const hasIntro = fs.existsSync(introPath);
-  const hasOutro = fs.existsSync(outroPath);
-  if (!hasIntro && !hasOutro) { fs.renameSync(inputPath, outputPath); return; }
-  log("🎬 Agregando intro/outro…");
-  const introNorm = hasIntro ? await normalizarAsset(introPath) : null;
-  const outroNorm = hasOutro ? await normalizarAsset(outroPath) : null;
-  const listPath = inputPath.replace(".mp4", "_list.txt");
-  const lines = [];
-  if (introNorm) lines.push(`file '${introNorm}'`);
-  lines.push(`file '${inputPath}'`);
-  if (outroNorm) lines.push(`file '${outroNorm}'`);
-  fs.writeFileSync(listPath, lines.join("\n"));
-  await ffmpegRun([
-    "-f", "concat", "-safe", "0", "-i", listPath,
-    "-c:v", "libx264", "-crf", "26", "-preset", "fast",
-    "-c:a", "aac", "-ar", "44100", "-ac", "2",
-    "-movflags", "+faststart", "-y", outputPath,
-  ]);
-  fs.unlinkSync(inputPath);
-  fs.unlinkSync(listPath);
-}
-
-// ── Highlights ────────────────────────────────────────────────────────────────
-
-async function procesarHighlights(turnoId, fullVideoPath, startTime) {
-  const { data: highlights } = await supabase
-    .from("highlights").select("id, marcado_en")
-    .eq("turno_id", turnoId).is("clip_url", null);
-  if (!highlights || highlights.length === 0) return;
-  log(`✂️  Procesando ${highlights.length} highlight(s)…`);
-  for (const h of highlights) {
-    const offsetSeg = (new Date(h.marcado_en).getTime() - startTime) / 1000;
-    const desde = Math.max(0, offsetSeg - 30);
-    const clipRaw = path.join(TMP_DIR, `highlight-${h.id}-raw.mp4`);
-    await ffmpegRun([
-      "-ss", String(desde), "-i", fullVideoPath, "-t", "35",
-      "-c:v", "libx264", "-crf", "26", "-preset", "fast",
-      "-c:a", "aac", "-movflags", "+faststart", "-y", clipRaw,
-    ]);
-    if (!fs.existsSync(clipRaw)) { log(`⚠️  No se pudo cortar el highlight ${h.id}`); continue; }
-    try {
-      const brandedPath = await procesarBranding(clipRaw);
-      const clipUrl = await subirR2(`highlights/${h.id}.mp4`, brandedPath);
-      await supabase.from("highlights").update({ clip_url: clipUrl }).eq("id", h.id);
-      fs.unlinkSync(brandedPath);
-      log(`🎬 Highlight ${h.id} subido`);
-    } catch (err) {
-      log(`❌ Error subiendo highlight ${h.id}: ${err.message}`);
-    }
-  }
-}
-
-async function procesarBranding(rawPath) {
+async function aplicarZocalo(inputPath, outputPath) {
   const zocaloPath = path.join(ASSETS_DIR, "zocalo.png");
-  const introPath = path.join(ASSETS_DIR, "intro.mp4");
-  const outroPath = path.join(ASSETS_DIR, "outro.mp4");
-  if (!fs.existsSync(zocaloPath) && !fs.existsSync(introPath) && !fs.existsSync(outroPath)) return rawPath;
-  const tempPath = rawPath.replace(".mp4", "_zocalo.mp4");
-  const brandedPath = rawPath.replace(".mp4", "_final.mp4");
-  await aplicarZocalo(rawPath, tempPath);
-  await agregarIntroOutro(tempPath, brandedPath);
-  return brandedPath;
+  if (!fs.existsSync(zocaloPath)) { fs.renameSync(inputPath, outputPath); return; }
+  log("🎨 Aplicando zócalo…");
+  const conAudio = await tieneAudio(inputPath);
+  const args = conAudio
+    ? [
+        "-i", inputPath, "-i", zocaloPath,
+        "-filter_complex", "[0:v][1:v]overlay=x=0:y=H-h[v]",
+        "-map", "[v]", "-map", "0:a",
+        "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1", "-pix_fmt", "yuv420p", "-crf", "26", "-preset", "fast",
+        "-c:a", "aac", "-y", outputPath,
+      ]
+    : [
+        "-i", inputPath, "-i", zocaloPath,
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+        "-filter_complex", "[0:v][1:v]overlay=x=0:y=H-h[v]",
+        "-map", "[v]", "-map", "2:a",
+        "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1", "-pix_fmt", "yuv420p", "-crf", "26", "-preset", "fast",
+        "-c:a", "aac", "-shortest", "-y", outputPath,
+      ];
+  await ffmpegRun(args);
+  fs.unlinkSync(inputPath);
 }
 
-// ── Post-procesado de turno ───────────────────────────────────────────────────
+// ── Cargar canchas ────────────────────────────────────────────────────────────
 
-async function detenerYSubir(turnoId) {
-  const rec = grabaciones[turnoId];
-  if (!rec) return;
-  detenerPollingMarcador();
-  rec.proceso.kill("SIGINT");
-  log(`⏹  Deteniendo grabación del turno ${turnoId}…`);
-  await new Promise((r) => setTimeout(r, 4000));
-  const { filePath, startTime } = rec;
-  delete grabaciones[turnoId];
-  if (!fs.existsSync(filePath)) { log(`❌ No se encontró el archivo: ${filePath}`); return; }
-  const zocaloPath = filePath.replace(".mp4", "_zocalo.mp4");
-  const finalPath = filePath.replace(".mp4", "_final.mp4");
-  try {
-    await aplicarZocalo(filePath, zocaloPath);
-    await procesarHighlights(turnoId, zocaloPath, startTime);
-    await agregarIntroOutro(zocaloPath, finalPath);
-    const key = `turnos/${turnoId}.mp4`;
-    const videoUrl = await subirR2(key, finalPath);
-    await supabase.from("turnos").update({ video_url: videoUrl }).eq("id", turnoId);
-    log(`✅ Turno ${turnoId} disponible: ${videoUrl}`);
-    fs.unlinkSync(finalPath);
-  } catch (err) {
-    log(`❌ Error procesando turno ${turnoId}: ${err.message}`);
-    for (const tmp of [filePath, zocaloPath, finalPath]) {
-      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
-    }
-  }
-}
-
-// ── Scheduling ────────────────────────────────────────────────────────────────
-
-async function getTurnosHoy() {
-  const hoy = new Date().toLocaleDateString("en-CA");
-  const ids = canchas.map((c) => c.id);
-  if (ids.length === 0) return [];
+async function cargarCanchas() {
   const { data, error } = await supabase
-    .from("turnos")
-    .select("id, hora_inicio, hora_fin, cancha_id")
-    .in("cancha_id", ids)
-    .eq("fecha", hoy)
-    .is("video_url", null)
-    .order("hora_inicio");
-  if (error) { log(`❌ Error leyendo turnos: ${error.message}`); return []; }
-  return data ?? [];
+    .from("canchas")
+    .select("id, nombre, rtsp_url, youtube_stream_key")
+    .eq("complejo_id", COMPLEJO_ID);
+  if (error) { log(`❌ Error cargando canchas: ${error.message}`); return; }
+  canchas = data ?? [];
+  log(`🏟️  ${canchas.length} cancha(s): ${canchas.map((c) => c.nombre).join(", ")}`);
 }
 
-async function programarTurnos() {
-  timeouts.forEach(clearTimeout);
-  timeouts = [];
-  const turnos = await getTurnosHoy();
-  log(`📋 ${turnos.length} turno(s) pendiente(s) para hoy`);
-  for (const turno of turnos) {
-    const cancha = canchas.find((c) => c.id === turno.cancha_id);
-    const rtspUrl = cancha?.rtsp_url || "avfoundation";
-    const msInicio = msHastaHora(turno.hora_inicio);
-    const msFin = msHastaHora(turno.hora_fin);
-    const filePath = path.join(TMP_DIR, `${turno.id}.mp4`);
-    if (msFin <= 0) continue;
-    if (msInicio > 0) {
-      log(`⏰ Turno ${turno.id} arranca en ${Math.round(msInicio / 60000)} min`);
-      timeouts.push(setTimeout(() => iniciarGrabacion(turno.id, filePath, rtspUrl, turno.cancha_id), msInicio));
-    } else {
-      iniciarGrabacion(turno.id, filePath, rtspUrl, turno.cancha_id);
+// ── Grabación continua ────────────────────────────────────────────────────────
+
+function dentroDeHorario() {
+  const h = new Date().getHours();
+  return h >= 8; // graba de 08:00 a 00:00 (h=0 → false)
+}
+
+function iniciarGrabacionContinua(cancha) {
+  if (grabacionesContinuas[cancha.id]) return;
+
+  const dir = path.join(RECORDINGS_DIR, cancha.id);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const rtspUrl = cancha.rtsp_url || "avfoundation";
+  const inputArgs = rtspUrl === "avfoundation"
+    ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0"]
+    : ["-rtsp_transport", "tcp", "-i", rtspUrl];
+
+  const outputPattern = path.join(dir, "%Y-%m-%d_%H-%M.mp4");
+
+  const args = [
+    ...inputArgs,
+    "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1",
+    "-preset", "veryfast", "-maxrate", "1500k", "-bufsize", "3000k",
+    "-pix_fmt", "yuv420p", "-g", "60",
+    "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+    "-f", "segment",
+    "-segment_time", "1800",
+    "-segment_atclocktime", "1",
+    "-strftime", "1",
+    "-reset_timestamps", "1",
+    outputPattern,
+  ];
+
+  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
+  grabacionesContinuas[cancha.id] = proc;
+
+  proc.on("close", (code) => {
+    delete grabacionesContinuas[cancha.id];
+    if (code !== 0 && code !== 255) {
+      log(`⚠️  [${cancha.nombre}] grabación cerrada (${code}), reintentando en 10s…`);
+      setTimeout(() => {
+        const c = canchas.find((x) => x.id === cancha.id);
+        if (c && dentroDeHorario()) iniciarGrabacionContinua(c);
+      }, 10000);
     }
-    timeouts.push(setTimeout(() => detenerYSubir(turno.id), msFin));
+  });
+
+  log(`🎥 Grabación continua iniciada [${cancha.nombre}]`);
+}
+
+function detenerGrabacionContinua(cancha) {
+  const proc = grabacionesContinuas[cancha.id];
+  if (!proc) return;
+  proc.kill("SIGINT");
+  delete grabacionesContinuas[cancha.id];
+  log(`⏹  Grabación detenida [${cancha.nombre}]`);
+}
+
+function tickGrabacion() {
+  const debeGrabar = dentroDeHorario();
+  for (const cancha of canchas) {
+    if (debeGrabar && !grabacionesContinuas[cancha.id]) {
+      // No iniciar si hay un stream de YouTube activo en avfoundation
+      const esAv = !cancha.rtsp_url || cancha.rtsp_url === "avfoundation";
+      if (esAv && streamProcesses[cancha.id]) continue;
+      iniciarGrabacionContinua(cancha);
+    } else if (!debeGrabar && grabacionesContinuas[cancha.id]) {
+      detenerGrabacionContinua(cancha);
+    }
   }
 }
 
-// ── Clip jobs ─────────────────────────────────────────────────────────────────
+// ── Limpieza de segmentos viejos ──────────────────────────────────────────────
+
+function limpiarSegmentosViejos() {
+  const limite = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  for (const cancha of canchas) {
+    const dir = path.join(RECORDINGS_DIR, cancha.id);
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        const fp = path.join(dir, f);
+        if (fs.statSync(fp).mtimeMs < limite) {
+          fs.unlinkSync(fp);
+          log(`🗑️  Segmento expirado: ${f}`);
+        }
+      }
+    } catch (_) {}
+  }
+}
+
+// ── Extracción de clips ───────────────────────────────────────────────────────
+
+async function extraerSegmento(pedido, outputPath) {
+  const dir = path.join(RECORDINGS_DIR, pedido.cancha_id);
+
+  const [hI, mI] = pedido.hora_inicio.split(":").map(Number);
+  const [hF, mF] = pedido.hora_fin.split(":").map(Number);
+  const inicioMin = hI * 60 + mI;
+  // medianoche = 0:00 → tratarlo como 24:00 para el cálculo
+  const finMin = (hF === 0 && mF === 0) ? 24 * 60 : hF * 60 + mF;
+
+  let files;
+  try { files = fs.readdirSync(dir); }
+  catch { throw new Error("No hay grabaciones para esta cancha"); }
+
+  const segments = files
+    .map((f) => {
+      const m = f.match(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})\.mp4$/);
+      if (!m || m[1] !== pedido.fecha) return null;
+      const startMin = parseInt(m[2]) * 60 + parseInt(m[3]);
+      return { file: path.join(dir, f), startMin };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.startMin - b.startMin)
+    .filter((s) => s.startMin < finMin && s.startMin + 30 > inicioMin);
+
+  if (segments.length === 0) {
+    throw new Error(`Sin grabaciones para ${pedido.fecha} ${pedido.hora_inicio}–${pedido.hora_fin}`);
+  }
+
+  const firstStart  = segments[0].startMin;
+  const offsetSec   = Math.max(0, (inicioMin - firstStart) * 60);
+  const durationSec = (finMin - inicioMin) * 60;
+
+  const concatFile = path.join(TMP_DIR, `concat-${pedido.id}.txt`);
+  fs.writeFileSync(concatFile, segments.map((s) => `file '${s.file}'`).join("\n"));
+
+  try {
+    await ffmpegRun([
+      "-f", "concat", "-safe", "0", "-i", concatFile,
+      "-ss", String(offsetSec), "-t", String(durationSec),
+      "-c", "copy",
+      "-y", outputPath,
+    ]);
+  } finally {
+    if (fs.existsSync(concatFile)) fs.unlinkSync(concatFile);
+  }
+}
+
+async function procesarPedidosClip() {
+  const { data: pedidos } = await supabase
+    .from("clip_requests")
+    .select("*")
+    .eq("status", "pending")
+    .order("created_at")
+    .limit(1);
+  if (!pedidos || pedidos.length === 0) return;
+
+  const pedido = pedidos[0];
+  await supabase.from("clip_requests").update({ status: "processing" }).eq("id", pedido.id);
+  log(`📦 Procesando clip ${pedido.id} — ${pedido.fecha} ${pedido.hora_inicio}–${pedido.hora_fin}`);
+
+  const rawPath   = path.join(TMP_DIR, `clip-${pedido.id}-raw.mp4`);
+  const finalPath = path.join(TMP_DIR, `clip-${pedido.id}.mp4`);
+
+  try {
+    await extraerSegmento(pedido, rawPath);
+    await aplicarZocalo(rawPath, finalPath);
+    const key      = `clips/${pedido.id}.mp4`;
+    const videoUrl = await subirR2(key, finalPath);
+    await supabase.from("clip_requests").update({ status: "ready", video_url: videoUrl }).eq("id", pedido.id);
+    log(`✅ Clip listo: ${pedido.id}`);
+  } catch (err) {
+    log(`❌ Error en clip ${pedido.id}: ${err.message}`);
+    await supabase.from("clip_requests").update({ status: "error", error_msg: err.message }).eq("id", pedido.id);
+  } finally {
+    if (fs.existsSync(rawPath))   fs.unlinkSync(rawPath);
+    if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+  }
+}
+
+// ── Clip verticales (editor) ──────────────────────────────────────────────────
 
 async function procesarClipJobs() {
   const { data: jobs } = await supabase
@@ -499,7 +307,7 @@ async function procesarClipJobs() {
   const job = jobs[0];
   await supabase.from("clip_jobs").update({ status: "processing" }).eq("id", job.id);
   log(`✂️  Procesando clip vertical ${job.id}…`);
-  const tmpInput = path.join(TMP_DIR, `clipjob-${job.id}-in.mp4`);
+  const tmpInput  = path.join(TMP_DIR, `clipjob-${job.id}-in.mp4`);
   const tmpOutput = path.join(TMP_DIR, `clipjob-${job.id}-out.mp4`);
   try {
     fs.mkdirSync(TMP_DIR, { recursive: true });
@@ -508,7 +316,7 @@ async function procesarClipJobs() {
     await ffmpegRun([
       "-i", tmpInput,
       "-vf", `crop=ih*9/16:ih:iw*${job.crop_x_pct}:0,scale=1080:1920`,
-      "-c:v", "libx264", "-preset", "fast", "-crf", "26",
+      "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1", "-preset", "fast", "-crf", "26",
       "-c:a", "aac", "-movflags", "+faststart", "-y", tmpOutput,
     ]);
     const resultUrl = await subirR2(`clips/${job.id}.mp4`, tmpOutput);
@@ -518,50 +326,175 @@ async function procesarClipJobs() {
     await supabase.from("clip_jobs").update({ status: "error" }).eq("id", job.id);
     log(`❌ Error en clip job ${job.id}: ${err.message}`);
   } finally {
-    if (fs.existsSync(tmpInput)) fs.unlinkSync(tmpInput);
+    if (fs.existsSync(tmpInput))  fs.unlinkSync(tmpInput);
     if (fs.existsSync(tmpOutput)) fs.unlinkSync(tmpOutput);
+  }
+}
+
+// ── Stream en vivo (YouTube) ──────────────────────────────────────────────────
+
+const OVERLAY_PORT = 9988;
+const OVERLAY_W    = 920;
+const OVERLAY_H    = 52;
+let _overlayBuffer = Buffer.alloc(OVERLAY_W * OVERLAY_H * 4, 0);
+let _overlayServer = null;
+
+function iniciarServidorOverlay() {
+  return new Promise((resolve) => {
+    if (_overlayServer?.listening) { resolve(); return; }
+    const net = require("net");
+    _overlayServer = net.createServer((socket) => {
+      const timer = setInterval(() => {
+        try { socket.write(_overlayBuffer); } catch (_) {}
+      }, 500);
+      socket.on("close", () => clearInterval(timer));
+      socket.on("error", () => clearInterval(timer));
+    });
+    _overlayServer.on("error", (err) => { log(`⚠️  Overlay TCP: ${err.message}`); resolve(); });
+    _overlayServer.listen(OVERLAY_PORT, "127.0.0.1", () => {
+      log(`🖼  Overlay listo (TCP ${OVERLAY_PORT})`);
+      resolve();
+    });
+  });
+}
+
+function ffmpegArgsStream(rtspUrl, ytUrl) {
+  const inputBase = rtspUrl === "avfoundation"
+    ? ["-f", "avfoundation", "-framerate", "30", "-video_size", "1280x720", "-i", "0:0"]
+    : ["-rtsp_transport", "tcp", "-i", rtspUrl];
+  const encodeOutput = [
+    "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1",
+    "-preset", "veryfast", "-maxrate", "1500k", "-bufsize", "3000k",
+    "-pix_fmt", "yuv420p", "-g", "60",
+    "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+    "-b:v", "1500k", "-tune", "zerolatency", "-f", "flv", ytUrl,
+  ];
+  if (_overlayServer?.listening) {
+    return [
+      ...inputBase,
+      "-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${OVERLAY_W}x${OVERLAY_H}`, "-framerate", "2",
+      "-i", `tcp://127.0.0.1:${OVERLAY_PORT}`,
+      "-filter_complex", "[0:v][1:v]overlay=10:10[v]",
+      "-map", "[v]", "-map", "0:a",
+      ...encodeOutput,
+    ];
+  }
+  return [...inputBase, ...encodeOutput];
+}
+
+async function setStreamActivo(canchaId, valor) {
+  await supabase.from("canchas").update({ stream_activo: valor }).eq("id", canchaId);
+}
+
+function iniciarStream(cancha) {
+  if (streamProcesses[cancha.id]) return;
+  if (!cancha.youtube_stream_key) { log(`⚠️  [${cancha.nombre}] Sin youtube_stream_key`); return; }
+
+  const rtspUrl = cancha.rtsp_url || "avfoundation";
+  const esAv    = !cancha.rtsp_url || cancha.rtsp_url === "avfoundation";
+
+  // Pausar grabación continua para liberar la cámara
+  if (esAv && grabacionesContinuas[cancha.id]) {
+    detenerGrabacionContinua(cancha);
+  }
+
+  const ytUrl = `rtmp://a.rtmp.youtube.com/live2/${cancha.youtube_stream_key}`;
+  const args  = ffmpegArgsStream(rtspUrl, ytUrl);
+  const proc  = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
+
+  const confirmTimer = setTimeout(() => {
+    if (streamProcesses[cancha.id]) { setStreamActivo(cancha.id, true); log(`✅ Stream confirmado → YouTube [${cancha.nombre}]`); }
+  }, 10000);
+
+  proc.on("close", (code) => {
+    clearTimeout(confirmTimer);
+    setStreamActivo(cancha.id, false);
+    delete streamProcesses[cancha.id];
+    log(`⏹  Stream [${cancha.nombre}] cerrado (código ${code})`);
+    // Reanudar grabación si corresponde
+    const c = canchas.find((x) => x.id === cancha.id);
+    if (c && dentroDeHorario()) setTimeout(() => iniciarGrabacionContinua(c), 3000);
+  });
+
+  streamProcesses[cancha.id] = { proceso: proc, confirmTimer, ytUrl };
+  log(`🔴 Conectando a YouTube… [${cancha.nombre}]`);
+}
+
+function detenerStream(cancha) {
+  const entry = streamProcesses[cancha.id];
+  if (!entry) return;
+  clearTimeout(entry.confirmTimer);
+  entry.proceso.kill("SIGTERM");
+  delete streamProcesses[cancha.id];
+  setStreamActivo(cancha.id, false);
+  log(`⏹️  Stream detenido [${cancha.nombre}]`);
+}
+
+async function verificarStreams() {
+  if (canchas.length === 0) return;
+  const ids     = canchas.map((c) => c.id);
+  const { data } = await supabase.from("canchas").select("id, nombre, rtsp_url, youtube_stream_key, transmitiendo").in("id", ids);
+  if (!data) return;
+  canchas = canchas.map((c) => ({ ...c, ...(data.find((d) => d.id === c.id) ?? {}) }));
+  for (const cancha of canchas) {
+    if (cancha.transmitiendo && !streamProcesses[cancha.id]) iniciarStream(cancha);
+    else if (!cancha.transmitiendo && streamProcesses[cancha.id]) detenerStream(cancha);
   }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-if (!COMPLEJO_ID) {
-  console.error("❌ Falta COMPLEJO_ID en .env");
-  process.exit(1);
-}
+if (!COMPLEJO_ID) { console.error("❌ Falta COMPLEJO_ID en .env"); process.exit(1); }
 
 function limpiarYSalir() {
-  log("🛑 Apagando recorder — matando procesos ffmpeg activos…");
-  for (const entry of Object.values(streamProcesses)) {
-    try { entry.proceso.kill("SIGTERM"); } catch (_) {}
-  }
-  for (const rec of Object.values(grabaciones)) {
-    try { if (rec.proceso) rec.proceso.kill("SIGTERM"); } catch (_) {}
-  }
+  log("🛑 Apagando recorder…");
+  for (const entry of Object.values(streamProcesses)) { try { entry.proceso.kill("SIGTERM"); } catch (_) {} }
+  for (const proc of Object.values(grabacionesContinuas)) { try { proc.kill("SIGINT"); } catch (_) {} }
   process.exit(0);
 }
-process.on("SIGINT", limpiarYSalir);
+process.on("SIGINT",  limpiarYSalir);
 process.on("SIGTERM", limpiarYSalir);
 
-// Limpiar ffmpegs huérfanos de runs anteriores (por si hubo crash o kill -9)
-{ const { spawnSync } = require("child_process");
-  spawnSync("pkill", ["-f", "ffmpeg.*rtmp"], { stdio: "ignore" });
-  spawnSync("pkill", ["-f", "ffmpeg.*avfoundation"], { stdio: "ignore" });
-}
+fs.mkdirSync(TMP_DIR,        { recursive: true });
+fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
 
 log(`🚀 Recorder iniciado — Complejo: ${COMPLEJO_ID}`);
-log(`🎨 Assets: ${ASSETS_DIR}`);
+log(`📁 Grabaciones: ${RECORDINGS_DIR}`);
 
 cargarCanchas().then(async () => {
-  await crearTurnosDesdeHorario();
-  await programarTurnos();
-  verificarStreams();
+  await iniciarServidorOverlay();
+  tickGrabacion();
+  await verificarStreams();
+
+  supabase
+    .channel("canchas-control")
+    .on("postgres_changes", { event: "UPDATE", schema: "public", table: "canchas" }, (payload) => {
+      const updated = payload.new;
+      const cancha  = canchas.find((c) => c.id === updated.id);
+      if (!cancha) return;
+      Object.assign(cancha, updated);
+      if (updated.transmitiendo && !streamProcesses[updated.id]) {
+        log(`📡 Dashboard → iniciando stream [${cancha.nombre}]`);
+        iniciarStream(cancha);
+      } else if (!updated.transmitiendo && streamProcesses[updated.id]) {
+        log(`📡 Dashboard → deteniendo stream [${cancha.nombre}]`);
+        detenerStream(cancha);
+      }
+    })
+    .subscribe((status) => log(`📡 Realtime: ${status}`));
 });
 
-setInterval(async () => {
-  await crearTurnosDesdeHorario();
-  await programarTurnos();
-}, 60 * 60 * 1000);
+// Chequear grabación cada minuto (arranca/para según horario)
+setInterval(tickGrabacion, 60 * 1000);
 
+// Procesar pedidos de clip cada 15 segundos
+setInterval(procesarPedidosClip, 15 * 1000);
+
+// Procesar clip verticales (editor) cada 10 segundos
 setInterval(procesarClipJobs, 10 * 1000);
+
+// Verificar streams cada 30 segundos
 setInterval(verificarStreams, 30 * 1000);
+
+// Limpiar segmentos viejos cada 6 horas
+setInterval(limpiarSegmentosViejos, 6 * 60 * 60 * 1000);
