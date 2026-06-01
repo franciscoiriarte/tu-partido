@@ -97,7 +97,9 @@ export default function Home() {
     if (horaFin && horaInicio && horaFin <= horaInicio) setHoraFin("");
   }, [horaInicio]);
 
-  const horasFin = ["00:00", ...HORAS.filter((h) => !horaInicio || h > horaInicio)];
+  const horasFin = horaInicio
+    ? [...HORAS.filter((h) => h > horaInicio), "00:00"]
+    : [];
 
   function handleBuscar(e: React.FormEvent) {
     e.preventDefault();
@@ -168,43 +170,33 @@ export default function Home() {
 
           {/* Hora inicio */}
           <Label>Hora de inicio</Label>
-          <div className="flex flex-wrap gap-1.5 mb-4">
+          <select
+            value={horaInicio}
+            onChange={(e) => setHoraInicio(e.target.value)}
+            className="w-full mb-4 px-3 py-2.5 rounded-lg text-sm bg-white/[0.04] border border-white/10 text-white appearance-none cursor-pointer focus:outline-none focus:border-[#5DCAA5]/50"
+          >
+            <option value="" disabled className="bg-[#0a1f1a]">Seleccioná una hora</option>
             {HORAS.map((h) => (
-              <button
-                key={h}
-                type="button"
-                onClick={() => setHoraInicio(h)}
-                className={`px-2.5 py-1.5 border rounded-md text-xs transition-all ${
-                  horaInicio === h
-                    ? "bg-[#2D9D75] border-[#2D9D75] text-white"
-                    : "bg-white/[0.04] border-white/10 text-white/60 hover:text-white hover:border-[#5DCAA5]/30"
-                }`}
-              >
-                {h}
-              </button>
+              <option key={h} value={h} className="bg-[#0a1f1a]">{h}</option>
             ))}
-          </div>
+          </select>
 
           {/* Hora fin */}
           {horaInicio && (
             <>
               <Label>Hora de fin</Label>
-              <div className="flex flex-wrap gap-1.5 mb-4">
+              <select
+                value={horaFin}
+                onChange={(e) => setHoraFin(e.target.value)}
+                className="w-full mb-4 px-3 py-2.5 rounded-lg text-sm bg-white/[0.04] border border-white/10 text-white appearance-none cursor-pointer focus:outline-none focus:border-[#5DCAA5]/50"
+              >
+                <option value="" disabled className="bg-[#0a1f1a]">Seleccioná una hora</option>
                 {horasFin.map((h) => (
-                  <button
-                    key={h}
-                    type="button"
-                    onClick={() => setHoraFin(h)}
-                    className={`px-2.5 py-1.5 border rounded-md text-xs transition-all ${
-                      horaFin === h
-                        ? "bg-[#2D9D75] border-[#2D9D75] text-white"
-                        : "bg-white/[0.04] border-white/10 text-white/60 hover:text-white hover:border-[#5DCAA5]/30"
-                    }`}
-                  >
+                  <option key={h} value={h} className="bg-[#0a1f1a]">
                     {h === "00:00" ? "00:00 (medianoche)" : h}
-                  </button>
+                  </option>
                 ))}
-              </div>
+              </select>
             </>
           )}
 
