@@ -152,14 +152,15 @@ function iniciarGrabacionContinua(cancha) {
     "-pix_fmt", "yuv420p", "-g", "60",
     "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
     "-f", "segment",
-    "-segment_time", "1800",
-    "-segment_atclocktime", "1",
+    "-segment_time", String(parseInt(process.env.SEGMENT_SECS || "1800")),
     "-strftime", "1",
     "-reset_timestamps", "1",
     outputPattern,
   ];
 
-  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "inherit"] });
+  const logFile = fs.openSync(path.join(dir, "ffmpeg.log"), "a");
+  const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", logFile] });
+  proc.on("close", () => { try { fs.closeSync(logFile); } catch (_) {} });
   grabacionesContinuas[cancha.id] = proc;
 
   proc.on("close", (code) => {
@@ -253,7 +254,7 @@ async function extraerSegmento(pedido, outputPath) {
     })
     .filter(Boolean)
     .sort((a, b) => a.startMin - b.startMin)
-    .filter((s) => s.startMin < finMin && s.startMin + 30 > inicioMin);
+    .filter((s) => s.startMin < finMin && s.startMin + Math.ceil(parseInt(process.env.SEGMENT_SECS || "1800") / 60) > inicioMin);
 
   if (segments.length === 0) {
     throw new Error(`Sin grabaciones para ${pedido.fecha} ${pedido.hora_inicio}–${pedido.hora_fin}`);
@@ -459,6 +460,18 @@ async function verificarStreams() {
 
 if (!COMPLEJO_ID) { console.error("❌ Falta COMPLEJO_ID en .env"); process.exit(1); }
 
+function matarFfmpegHuerfanos() {
+  try {
+    const { execSync } = require("child_process");
+    const output = execSync("pgrep -f 'tu-partido-recordings'", { encoding: "utf8" }).trim();
+    if (!output) return;
+    const pids = output.split("\n").map(Number).filter(Boolean);
+    for (const pid of pids) {
+      try { process.kill(pid, "SIGKILL"); log(`🧹 Proceso ffmpeg huérfano eliminado (PID ${pid})`); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
 function limpiarYSalir() {
   log("🛑 Apagando recorder…");
   for (const entry of Object.values(streamProcesses)) { try { entry.proceso.kill("SIGTERM"); } catch (_) {} }
@@ -470,6 +483,8 @@ process.on("SIGTERM", limpiarYSalir);
 
 fs.mkdirSync(TMP_DIR,        { recursive: true });
 fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+
+matarFfmpegHuerfanos();
 
 log(`🚀 Recorder iniciado — Complejo: ${COMPLEJO_ID}`);
 log(`📁 Grabaciones: ${RECORDINGS_DIR}`);
