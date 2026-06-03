@@ -2,6 +2,12 @@
 
 import { useEffect, useState } from "react";
 import ShareButton from "./ShareButton";
+import SegmentPlayer from "./SegmentPlayer";
+
+function parseVideoUrls(url: string): string[] {
+  if (url.startsWith("[")) { try { return JSON.parse(url); } catch {} }
+  return [url];
+}
 
 type Status = "pending" | "processing" | "ready" | "error";
 
@@ -32,21 +38,20 @@ export default function ClipStatusPoller({
   }, [pedidoId, status]);
 
   if (status === "ready" && videoUrl) {
+    const urls = parseVideoUrls(videoUrl);
     return (
       <div>
-        <video controls playsInline preload="metadata" className="w-full mb-3 rounded">
-          <source src={videoUrl} type="video/mp4" />
-        </video>
-        <div className="flex gap-2">
+        <SegmentPlayer urls={urls} />
+        <div className="flex gap-2 mt-3">
           <a
-            href={`/api/download?url=${encodeURIComponent(videoUrl)}&filename=partido.mp4`}
+            href={`/api/download?url=${encodeURIComponent(urls[0])}&filename=partido.mp4`}
             className="flex-1 block text-center py-3 text-sm font-semibold rounded"
             style={{ background: "var(--accent)", color: "#fff" }}
           >
-            Descargar video completo
+            {urls.length > 1 ? "Descargar parte 1" : "Descargar video completo"}
           </a>
           <ShareButton
-            url={videoUrl}
+            url={urls[0]}
             text="Mirá el video de mi partido en Tu Partido 🎾"
           />
         </div>

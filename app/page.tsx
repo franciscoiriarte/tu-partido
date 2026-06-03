@@ -49,7 +49,8 @@ const STATS = [
   { num: "$0",   lbl: "Costo del jugador" },
 ];
 
-type Cancha = { id: string; nombre: string };
+type TurnoFijo = { inicio: string; fin: string };
+type Cancha = { id: string; nombre: string; turnos_fijos: TurnoFijo[] };
 
 export default function Home() {
   const router = useRouter();
@@ -60,8 +61,9 @@ export default function Home() {
   const [canchas, setCanchas]       = useState<Cancha[]>([]);
   const [canchaId, setCanchaId]     = useState("");
   const [dia, setDia]               = useState(dias[0].valor);
-  const [horaInicio, setHoraInicio] = useState("");
-  const [horaFin, setHoraFin]       = useState("");
+  const [turno, setTurno]           = useState("");   // "HH:MM|HH:MM"
+  const [horaInicio, setHoraInicio] = useState("");   // fallback libre
+  const [horaFin, setHoraFin]       = useState("");   // fallback libre
 
   // Cargar complejos
   useEffect(() => {
@@ -77,13 +79,14 @@ export default function Home() {
       });
   }, []);
 
-  // Cargar canchas cuando cambia el complejo
+  // Cargar canchas (con turnos_fijos) cuando cambia el complejo
   useEffect(() => {
     if (!complejoId) return;
     setCanchaId("");
+    setTurno("");
     createClient()
       .from("canchas")
-      .select("id, nombre")
+      .select("id, nombre, turnos_fijos")
       .eq("complejo_id", complejoId)
       .order("nombre")
       .then(({ data }) => {
@@ -92,24 +95,34 @@ export default function Home() {
       });
   }, [complejoId]);
 
-  // Resetear horaFin si queda antes de horaInicio
+  // Resetear turno al cambiar cancha
+  useEffect(() => { setTurno(""); setHoraInicio(""); setHoraFin(""); }, [canchaId]);
+
+  const canchaActual = canchas.find((c) => c.id === canchaId);
+  const turnosFijos  = canchaActual?.turnos_fijos ?? [];
+  const usaTurnos    = turnosFijos.length > 0;
+
+  // Fallback libre: resetear fin si queda antes del inicio
   useEffect(() => {
     if (horaFin && horaInicio && horaFin <= horaInicio) setHoraFin("");
   }, [horaInicio]);
-
-  const horasFin = horaInicio
-    ? [...HORAS.filter((h) => h > horaInicio), "00:00"]
-    : [];
+  const horasFin = horaInicio ? [...HORAS.filter((h) => h > horaInicio), "00:00"] : [];
 
   function handleBuscar(e: React.FormEvent) {
     e.preventDefault();
-    if (!canchaId || !dia || !horaInicio || !horaFin) return;
-    router.push(
-      `/resultados?cancha=${canchaId}&fecha=${dia}&inicio=${horaInicio}&fin=${horaFin}`
-    );
+    let inicio: string, fin: string;
+    if (usaTurnos) {
+      if (!turno) return;
+      [inicio, fin] = turno.split("|");
+    } else {
+      if (!horaInicio || !horaFin) return;
+      inicio = horaInicio;
+      fin    = horaFin;
+    }
+    router.push(`/resultados?cancha=${canchaId}&fecha=${dia}&inicio=${inicio}&fin=${fin}`);
   }
 
-  const puedeEnviar = Boolean(canchaId && dia && horaInicio && horaFin);
+  const puedeEnviar = Boolean(canchaId && dia && (usaTurnos ? turno : horaInicio && horaFin));
 
   return (
     <main className="min-h-screen bg-[#0a1f1a] text-white">
@@ -168,35 +181,47 @@ export default function Home() {
             ))}
           </div>
 
-          {/* Hora inicio */}
-          <Label>Hora de inicio</Label>
-          <select
-            value={horaInicio}
-            onChange={(e) => setHoraInicio(e.target.value)}
-            className="w-full mb-4 px-3 py-2.5 rounded-lg text-sm bg-white/[0.04] border border-white/10 text-white appearance-none cursor-pointer focus:outline-none focus:border-[#5DCAA5]/50"
-          >
-            <option value="" disabled className="bg-[#0a1f1a]">Seleccioná una hora</option>
-            {HORAS.map((h) => (
-              <option key={h} value={h} className="bg-[#0a1f1a]">{h}</option>
-            ))}
-          </select>
-
-          {/* Hora fin */}
-          {horaInicio && (
+          {/* Turno */}
+          <Label>Turno</Label>
+          {usaTurnos ? (
+            <select
+              value={turno}
+              onChange={(e) => setTurno(e.target.value)}
+              className="w-full mb-4 px-3 py-2.5 rounded-lg text-sm bg-white/[0.04] border border-white/10 text-white appearance-none cursor-pointer focus:outline-none focus:border-[#5DCAA5]/50"
+            >
+              <option value="" disabled className="bg-[#0a1f1a]">Seleccioná tu turno</option>
+              {turnosFijos.map((t) => (
+                <option key={`${t.inicio}|${t.fin}`} value={`${t.inicio}|${t.fin}`} className="bg-[#0a1f1a]">
+                  {t.inicio.slice(0, 5)} – {t.fin.slice(0, 5)}
+                </option>
+              ))}
+            </select>
+          ) : (
             <>
-              <Label>Hora de fin</Label>
               <select
-                value={horaFin}
-                onChange={(e) => setHoraFin(e.target.value)}
-                className="w-full mb-4 px-3 py-2.5 rounded-lg text-sm bg-white/[0.04] border border-white/10 text-white appearance-none cursor-pointer focus:outline-none focus:border-[#5DCAA5]/50"
+                value={horaInicio}
+                onChange={(e) => setHoraInicio(e.target.value)}
+                className="w-full mb-2 px-3 py-2.5 rounded-lg text-sm bg-white/[0.04] border border-white/10 text-white appearance-none cursor-pointer focus:outline-none focus:border-[#5DCAA5]/50"
               >
-                <option value="" disabled className="bg-[#0a1f1a]">Seleccioná una hora</option>
-                {horasFin.map((h) => (
-                  <option key={h} value={h} className="bg-[#0a1f1a]">
-                    {h === "00:00" ? "00:00 (medianoche)" : h}
-                  </option>
+                <option value="" disabled className="bg-[#0a1f1a]">Hora de inicio</option>
+                {HORAS.map((h) => (
+                  <option key={h} value={h} className="bg-[#0a1f1a]">{h}</option>
                 ))}
               </select>
+              {horaInicio && (
+                <select
+                  value={horaFin}
+                  onChange={(e) => setHoraFin(e.target.value)}
+                  className="w-full mb-4 px-3 py-2.5 rounded-lg text-sm bg-white/[0.04] border border-white/10 text-white appearance-none cursor-pointer focus:outline-none focus:border-[#5DCAA5]/50"
+                >
+                  <option value="" disabled className="bg-[#0a1f1a]">Hora de fin</option>
+                  {horasFin.map((h) => (
+                    <option key={h} value={h} className="bg-[#0a1f1a]">
+                      {h === "00:00" ? "00:00 (medianoche)" : h}
+                    </option>
+                  ))}
+                </select>
+              )}
             </>
           )}
 

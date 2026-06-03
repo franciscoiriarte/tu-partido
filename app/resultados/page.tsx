@@ -4,6 +4,14 @@ import Link from "next/link";
 import ClipStatusPoller from "./ClipStatusPoller";
 import ShareButton from "./ShareButton";
 import SaveButton from "./SaveButton";
+import SegmentPlayer from "./SegmentPlayer";
+
+function parseVideoUrls(videoUrl: string): string[] {
+  if (videoUrl.startsWith("[")) {
+    try { return JSON.parse(videoUrl); } catch {}
+  }
+  return [videoUrl];
+}
 
 export default async function ResultadosPage({
   searchParams,
@@ -73,24 +81,27 @@ export default async function ResultadosPage({
       </div>
 
       {pedido?.status === "ready" && pedido.video_url ? (
-        <div>
-          <video controls playsInline preload="metadata" className="w-full mb-3 rounded">
-            <source src={pedido.video_url} type="video/mp4" />
-          </video>
-          <div className="flex gap-2">
-            <a
-              href={`/api/download?url=${encodeURIComponent(pedido.video_url)}&filename=partido-${fecha}.mp4`}
-              className="flex-1 block text-center py-3 text-sm font-semibold rounded"
-              style={{ background: "var(--accent)", color: "#fff" }}
-            >
-              Descargar video completo
-            </a>
-            <ShareButton
-              url={pedido.video_url}
-              text={`Mirá el video de mi partido en Tu Partido 🎾`}
-            />
-          </div>
-        </div>
+        (() => {
+          const urls = parseVideoUrls(pedido.video_url);
+          return (
+            <div>
+              <SegmentPlayer urls={urls} />
+              <div className="flex gap-2 mt-3">
+                <a
+                  href={`/api/download?url=${encodeURIComponent(urls[0])}&filename=partido-${fecha}.mp4`}
+                  className="flex-1 block text-center py-3 text-sm font-semibold rounded"
+                  style={{ background: "var(--accent)", color: "#fff" }}
+                >
+                  {urls.length > 1 ? "Descargar parte 1" : "Descargar video completo"}
+                </a>
+                <ShareButton
+                  url={urls[0]}
+                  text={`Mirá el video de mi partido en Tu Partido 🎾`}
+                />
+              </div>
+            </div>
+          );
+        })()
       ) : (
         <ClipStatusPoller pedidoId={pedido?.id ?? null} initialStatus={pedido?.status ?? "pending"} />
       )}

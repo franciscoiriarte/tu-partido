@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import TurnosManager from "./TurnosManager";
 import HorarioManager from "./HorarioManager";
 import TransmisionesManager from "./TransmisionesManager";
+import TurnosFijosManager from "./TurnosFijosManager";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -14,7 +15,7 @@ export default async function DashboardPage() {
 
   const { data: complejo } = await supabase
     .from("complejos")
-    .select("*, canchas(*)")
+    .select("*, canchas(id, nombre, turnos_fijos)")
     .eq("user_id", user.id)
     .single();
 
@@ -48,6 +49,7 @@ export default async function DashboardPage() {
         {complejo.nombre}
       </h1>
       <p className="text-sm text-white/40 mb-8">Gestión de turnos</p>
+      <TurnosFijosManager canchas={canchas} />
       <TurnosManager canchas={canchas} />
       <HorarioManager canchas={canchas} horarios={horarios ?? []} />
       <TransmisionesManager canchas={canchas} />
