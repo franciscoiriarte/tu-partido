@@ -7,6 +7,16 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
+// ── Lock de instancia única ───────────────────────────────────────────────────
+const LOCK_FILE = "/tmp/tu-partido-recorder.lock";
+if (fs.existsSync(LOCK_FILE)) {
+  const pid = parseInt(fs.readFileSync(LOCK_FILE, "utf8").trim());
+  try { process.kill(pid, 0); console.error(`⛔ Recorder ya corriendo (PID ${pid}). Saliendo.`); process.exit(1); }
+  catch (_) { fs.unlinkSync(LOCK_FILE); } // PID obsoleto, continuar
+}
+fs.writeFileSync(LOCK_FILE, String(process.pid));
+process.on("exit", () => { try { fs.unlinkSync(LOCK_FILE); } catch (_) {} });
+
 // ── Clientes ──────────────────────────────────────────────────────────────────
 
 const supabase = createClient(
@@ -156,11 +166,55 @@ async function aplicarZocalo(inputPath, outputPath) {
 async function cargarCanchas() {
   const { data, error } = await supabase
     .from("canchas")
-    .select("id, nombre, rtsp_url, youtube_stream_key")
+    .select("id, nombre, rtsp_url, youtube_stream_key, turnos_fijos")
     .eq("complejo_id", COMPLEJO_ID);
   if (error) { log(`❌ Error cargando canchas: ${error.message}`); return; }
   canchas = data ?? [];
   log(`🏟️  ${canchas.length} cancha(s): ${canchas.map((c) => c.nombre).join(", ")}`);
+}
+
+// ── Auto-generación de clips al fin de cada turno fijo ────────────────────────
+
+const turnosAutoCreados = new Set(); // "canchaId|fecha|inicio|fin" — evita duplicados en esta sesión
+
+async function tickTurnosFijos() {
+  const ahora    = new Date();
+  const hoy      = ahora.toLocaleDateString("en-CA");
+  const ahoraMin = ahora.getHours() * 60 + ahora.getMinutes();
+
+  for (const cancha of canchas) {
+    const turnos = cancha.turnos_fijos ?? [];
+    for (const turno of turnos) {
+      const [hF, mF] = turno.fin.split(":").map(Number);
+      const finMin   = hF * 60 + (mF || 0);
+
+      // Crear el clip_request dentro de los 60 min posteriores al fin del turno
+      if (ahoraMin < finMin || ahoraMin > finMin + 60) continue;
+
+      const sessionKey = `${cancha.id}|${hoy}|${turno.inicio}|${turno.fin}`;
+      if (turnosAutoCreados.has(sessionKey)) continue;
+      turnosAutoCreados.add(sessionKey);
+
+      const { data: existente } = await supabase
+        .from("clip_requests")
+        .select("id")
+        .eq("cancha_id", cancha.id)
+        .eq("fecha", hoy)
+        .eq("hora_inicio", turno.inicio)
+        .eq("hora_fin", turno.fin)
+        .maybeSingle();
+
+      if (existente) continue;
+
+      await supabase.from("clip_requests").insert({
+        cancha_id:   cancha.id,
+        fecha:       hoy,
+        hora_inicio: turno.inicio,
+        hora_fin:    turno.fin,
+      });
+      log(`📅 Clip automático [${cancha.nombre}] ${turno.inicio}–${turno.fin}`);
+    }
+  }
 }
 
 // ── Grabación continua ────────────────────────────────────────────────────────
@@ -351,65 +405,103 @@ function tickSegmentos() {
 
 // ── Extracción de clips ───────────────────────────────────────────────────────
 
+function esMP4Valido(filePath) {
+  return new Promise((resolve) => {
+    const p = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filePath]);
+    p.on("close", (code) => resolve(code === 0));
+  });
+}
+
+async function extraerSegmento(pedido, outputPath) {
+  const dir = path.join(RECORDINGS_DIR, pedido.cancha_id);
+
+  const [hI, mI] = pedido.hora_inicio.split(":").map(Number);
+  const [hF, mF] = pedido.hora_fin.split(":").map(Number);
+  const inicioMin = hI * 60 + mI;
+  const finMin    = (hF === 0 && mF === 0) ? 24 * 60 : hF * 60 + mF;
+
+  let files;
+  try { files = fs.readdirSync(dir); }
+  catch { throw new Error("No hay grabaciones para esta cancha"); }
+
+  const segDurMin   = Math.ceil(parseInt(process.env.SEGMENT_SECS || "600") / 60);
+  const dosMinAtras = Date.now() - 2 * 60 * 1000;
+  const candidatos  = files
+    .map((f) => {
+      const m = f.match(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})\.mp4$/);
+      if (!m || m[1] !== pedido.fecha) return null;
+      const startMin = parseInt(m[2]) * 60 + parseInt(m[3]);
+      const fp = path.join(dir, f);
+      try { if (fs.statSync(fp).mtimeMs > dosMinAtras) return null; } catch { return null; }
+      return { file: fp, startMin };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.startMin - b.startMin)
+    .filter((s) => s.startMin < finMin && s.startMin + segDurMin > inicioMin);
+
+  // Filtrar archivos corruptos (sin moov atom)
+  const validos = await Promise.all(candidatos.map(async (s) => (await esMP4Valido(s.file)) ? s : null));
+  const segments = validos.filter(Boolean);
+
+  if (segments.length === 0)
+    throw new Error(`Sin grabaciones para ${pedido.fecha} ${pedido.hora_inicio}–${pedido.hora_fin}`);
+
+  const firstStart  = segments[0].startMin;
+  const offsetSec   = Math.max(0, (inicioMin - firstStart) * 60);
+  const durationSec = (finMin - inicioMin) * 60;
+  const concatFile  = path.join(TMP_DIR, `concat-${pedido.id}.txt`);
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+  fs.writeFileSync(concatFile, segments.map((s) => `file '${s.file}'`).join("\n"));
+
+  try {
+    await ffmpegRun([
+      "-f", "concat", "-safe", "0", "-i", concatFile,
+      "-ss", String(offsetSec), "-t", String(durationSec),
+      "-c", "copy", "-y", outputPath,
+    ]);
+  } finally {
+    if (fs.existsSync(concatFile)) fs.unlinkSync(concatFile);
+  }
+}
+
+let procesandoClip = false;
+
 async function procesarPedidosClip() {
-  const { data: pedidos } = await supabase
-    .from("clip_requests")
-    .select("*")
-    .in("status", ["pending", "processing"])
-    .order("created_at");
-  if (!pedidos || pedidos.length === 0) return;
+  if (procesandoClip) return;
+  procesandoClip = true;
+  try {
+    const { data: pedidos } = await supabase
+      .from("clip_requests")
+      .select("*")
+      .in("status", ["pending", "processing"])
+      .order("created_at")
+      .limit(1);
+    if (!pedidos || pedidos.length === 0) return;
 
-  const segDurMin = Math.ceil(parseInt(process.env.SEGMENT_SECS || "600") / 60);
+    const pedido    = pedidos[0];
+    const rawPath   = path.join(TMP_DIR, `clip-${pedido.id}-raw.mp4`);
+    const finalPath = path.join(TMP_DIR, `clip-${pedido.id}.mp4`);
+    fs.mkdirSync(TMP_DIR, { recursive: true });
 
-  for (const pedido of pedidos) {
-    const dir = path.join(RECORDINGS_DIR, pedido.cancha_id);
-    let files;
-    try { files = fs.readdirSync(dir); } catch { files = []; }
+    await supabase.from("clip_requests").update({ status: "processing" }).eq("id", pedido.id);
+    log(`📦 Procesando clip ${pedido.id} — ${pedido.fecha} ${pedido.hora_inicio}–${pedido.hora_fin}`);
 
-    const [hI, mI] = pedido.hora_inicio.split(":").map(Number);
-    const [hF, mF] = pedido.hora_fin.split(":").map(Number);
-    const inicioMin = hI * 60 + mI;
-    const finMin    = hF === 0 && mF === 0 ? 24 * 60 : hF * 60 + mF;
-
-    const relevantes = files
-      .map((f) => {
-        const m = f.match(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})\.mp4$/);
-        if (!m || m[1] !== pedido.fecha) return null;
-        const startMin = parseInt(m[2]) * 60 + parseInt(m[3]);
-        if (startMin >= finMin || startMin + segDurMin <= inicioMin) return null;
-        return { f, baseName: f.slice(0, -4), startMin };
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.startMin - b.startMin);
-
-    if (relevantes.length === 0) {
-      if (pedido.status === "pending") {
-        await supabase.from("clip_requests").update({ status: "error", error_msg: "Sin grabación para ese horario" }).eq("id", pedido.id);
-        log(`❌ Sin segmentos para clip ${pedido.id}`);
-      }
-      continue;
-    }
-
-    const urls = [];
-    let todoListo = true;
-    for (const seg of relevantes) {
-      const donePath = path.join(dir, `${seg.baseName}.done`);
-      if (fs.existsSync(donePath)) {
-        urls.push(`${R2_PUBLIC_URL}/segments/${pedido.cancha_id}/${seg.f}`);
-      } else {
-        todoListo = false;
-        break;
-      }
-    }
-
-    if (todoListo && urls.length > 0) {
-      const videoUrl = urls.length === 1 ? urls[0] : JSON.stringify(urls);
+    try {
+      await extraerSegmento(pedido, rawPath);
+      await aplicarZocalo(rawPath, finalPath);
+      const key      = `clips/${pedido.id}.mp4`;
+      const videoUrl = await subirR2(key, finalPath);
       await supabase.from("clip_requests").update({ status: "ready", video_url: videoUrl }).eq("id", pedido.id);
-      log(`✅ Clip listo (${urls.length} seg): ${pedido.id}`);
-    } else if (pedido.status === "pending") {
-      await supabase.from("clip_requests").update({ status: "processing" }).eq("id", pedido.id);
-      log(`⏳ Clip en espera de segmentos [${pedido.id}]`);
+      log(`✅ Clip listo: ${pedido.id}`);
+    } catch (err) {
+      log(`❌ Error en clip ${pedido.id}: ${err.message}`);
+      await supabase.from("clip_requests").update({ status: "error", error_msg: err.message }).eq("id", pedido.id);
+    } finally {
+      if (fs.existsSync(rawPath))   fs.unlinkSync(rawPath);
+      if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
     }
+  } finally {
+    procesandoClip = false;
   }
 }
 
@@ -486,7 +578,7 @@ async function procesarHighlights() {
       fs.writeFileSync(concatFile, relevant.map((r) => `file '${r.path}'`).join("\n"));
       log(`🎬 Extrayendo highlight ${h.id} (SS=${SS.toFixed(1)}s, src=${relevant.length} seg)…`);
       await ffmpegRun([
-        ...hwEncoder.hwaccelArgs,
+        // No hwaccel: TS buffer segments cause issues with VideoToolbox decoder
         "-f", "concat", "-safe", "0", "-i", concatFile,
         "-ss", SS.toFixed(2),
         "-t",  "35",
@@ -693,7 +785,9 @@ cargarCanchas().then(async () => {
   await iniciarServidorOverlay();
   tickGrabacion();
   inicializarSegmentosProcessados();
-  tickSegmentos();
+  // Resetear clips que quedaron trabados en "processing" por un reinicio anterior
+  await supabase.from("clip_requests").update({ status: "pending" }).eq("status", "processing");
+  log("🔄 Clips en processing reseteados a pending");
   await verificarStreams();
 
   supabase
@@ -702,7 +796,10 @@ cargarCanchas().then(async () => {
       const updated = payload.new;
       const cancha  = canchas.find((c) => c.id === updated.id);
       if (!cancha) return;
+      const turnosAntes = JSON.stringify(cancha.turnos_fijos);
       Object.assign(cancha, updated);
+      if (JSON.stringify(cancha.turnos_fijos) !== turnosAntes)
+        log(`📅 Turnos actualizados [${cancha.nombre}]: ${cancha.turnos_fijos.length} turno(s)`);
       if (updated.transmitiendo && !streamProcesses[updated.id]) {
         log(`📡 Dashboard → iniciando stream [${cancha.nombre}]`);
         iniciarStream(cancha);
@@ -714,13 +811,24 @@ cargarCanchas().then(async () => {
     .subscribe((status) => log(`📡 Realtime: ${status}`));
 });
 
+// Apagado limpio: cerrar ffmpeg correctamente para no dejar MP4 incompletos
+function shutdown() {
+  log("🛑 Apagando recorder…");
+  for (const proc of Object.values(grabacionesContinuas)) {
+    try { proc.kill("SIGINT"); } catch (_) {}
+  }
+  setTimeout(() => process.exit(0), 3000);
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT",  shutdown);
+
 // Chequear grabación cada minuto (arranca/para según horario)
 setInterval(tickGrabacion, 60 * 1000);
 
 // Pre-procesar segmentos cerrados cada minuto
-setInterval(tickSegmentos, 60 * 1000);
 
 // Procesar pedidos de clip cada 15 segundos
+setInterval(tickTurnosFijos,    60 * 1000);
 setInterval(procesarPedidosClip, 15 * 1000);
 
 // Procesar highlight clips cada 5 segundos

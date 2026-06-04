@@ -38,7 +38,7 @@ export default async function ResultadosPage({
     .eq("id", canchaId)
     .single();
 
-  // Buscar pedido existente (listo o en proceso)
+  // Buscar pedido existente — priorizar "ready" sobre "processing"/"pending"
   const { data: pedidoExistente } = await supabase
     .from("clip_requests")
     .select("*")
@@ -46,6 +46,7 @@ export default async function ResultadosPage({
     .eq("fecha", fecha)
     .eq("hora_inicio", inicio)
     .eq("hora_fin", fin)
+    .order("status", { ascending: false }) // "ready" > "processing" > "pending" alfabéticamente
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
