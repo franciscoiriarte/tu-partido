@@ -2,6 +2,7 @@ import { createClient } from "@/utils/supabase/server";
 import { redirect } from "next/navigation";
 import TransmisionesManager from "./TransmisionesManager";
 import TurnosFijosManager from "./TurnosFijosManager";
+import ReconectarCamara from "./ReconectarCamara";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -62,12 +63,13 @@ export default async function DashboardPage() {
           </span>
         </div>
         {status?.camaras && (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="flex flex-col gap-2">
             {status.camaras.map((c) => (
               <div key={c.id} className="flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ${c.grabando ? "bg-green-400" : "bg-red-400"}`} />
-                <span className="text-xs text-white/60 truncate">{c.nombre}</span>
-                {c.reintentos > 0 && <span className="text-xs text-yellow-400">({c.reintentos})</span>}
+                <span className="text-xs text-white/60 flex-1">{c.nombre}</span>
+                {c.reintentos > 0 && <span className="text-xs text-yellow-400">{c.reintentos} reintentos</span>}
+                {!c.grabando && <ReconectarCamara canchaId={c.id} nombre={c.nombre} />}
               </div>
             ))}
           </div>

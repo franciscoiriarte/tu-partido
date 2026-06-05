@@ -874,9 +874,16 @@ cargarCanchas().then(async () => {
       const cancha  = canchas.find((c) => c.id === updated.id);
       if (!cancha) return;
       const turnosAntes = JSON.stringify(cancha.turnos_fijos);
+      const estabaGrabando = !!grabacionesContinuas[cancha.id];
       Object.assign(cancha, updated);
       if (JSON.stringify(cancha.turnos_fijos) !== turnosAntes)
         log(`📅 Turnos actualizados [${cancha.nombre}]: ${cancha.turnos_fijos.length} turno(s)`);
+      // Si la cámara está offline y se recibe un update → reconexión solicitada desde dashboard
+      if (!estabaGrabando && !grabacionesContinuas[cancha.id] && dentroDeHorario()) {
+        log(`🔄 [${cancha.nombre}] reconexión solicitada desde dashboard`);
+        retryCounts[cancha.id] = 0;
+        iniciarGrabacionContinua(cancha);
+      }
       if (updated.transmitiendo && !streamProcesses[updated.id]) {
         log(`📡 Dashboard → iniciando stream [${cancha.nombre}]`);
         iniciarStream(cancha);
