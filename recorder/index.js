@@ -41,11 +41,17 @@ const R2_BUCKET      = process.env.R2_BUCKET;
 const R2_PUBLIC_URL  = process.env.R2_PUBLIC_URL;
 const ASSETS_DIR     = process.env.ASSETS_DIR     || path.join(__dirname, "assets");
 
+const LOG_DIR  = path.join(os.homedir(), "Library", "Logs", "tupartido");
+const LOG_FILE = path.join(LOG_DIR, "recorder.log");
+fs.mkdirSync(LOG_DIR, { recursive: true });
+const logStream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+
 // ── Estado ────────────────────────────────────────────────────────────────────
 
 let canchas = [];
 const grabacionesContinuas = {}; // canchaId → ffmpeg process
 const streamProcesses      = {}; // canchaId → { proceso, confirmTimer }
+const retryCounts          = {}; // canchaId → número de fallos consecutivos
 
 const segmentosProcessados = new Set(); // "canchaId/YYYY-MM-DD_HH-MM.mp4"
 const procesandoSegmentos  = new Set(); // canchaIds currently encoding a segment
@@ -84,7 +90,9 @@ async function detectarEncoder() {
 // ── Utilidades ────────────────────────────────────────────────────────────────
 
 function log(msg) {
-  console.log(`[${new Date().toLocaleTimeString("es-AR")}] ${msg}`);
+  const line = `[${new Date().toLocaleString("es-AR")}] ${msg}`;
+  console.log(line);
+  logStream.write(line + "\n");
 }
 
 function horaAMs(horaStr) {
@@ -279,15 +287,18 @@ function iniciarGrabacionContinua(cancha) {
   proc.on("close", (code) => {
     delete grabacionesContinuas[cancha.id];
     if (code !== 0 && code !== 255) {
-      log(`⚠️  [${cancha.nombre}] grabación cerrada (${code})`);
+      retryCounts[cancha.id] = (retryCounts[cancha.id] || 0) + 1;
+      const retries  = retryCounts[cancha.id];
+      const delaySec = Math.min(15 * Math.pow(2, retries - 1), 300); // 15s → 30s → 60s → 120s → 300s
+      log(`⚠️  [${cancha.nombre}] grabación cerrada (${code}) — reintento #${retries} en ${delaySec}s`);
       if (!esAv) {
-        // Para RTSP: reintentar en 15s
         setTimeout(() => {
           const c = canchas.find((x) => x.id === cancha.id);
           if (c && dentroDeHorario()) iniciarGrabacionContinua(c);
-        }, 15000);
+        }, delaySec * 1000);
       }
-      // Para avfoundation: tickGrabacion reintenta cada minuto (evita loop de cámara ocupada)
+    } else {
+      retryCounts[cancha.id] = 0; // conexión limpia → resetear contador
     }
   });
 
@@ -304,8 +315,8 @@ function detenerGrabacionContinua(cancha) {
 
 function tickGrabacion() {
   const debeGrabar = dentroDeHorario();
+  const dosMinAtras = Date.now() - 2 * 60 * 1000;
 
-  // Esta variable se actualiza dentro del loop para que solo una cancha avfoundation arranque por tick
   let avFoundationOcupado = canchas.some(
     (c) => grabacionesContinuas[c.id] && (!c.rtsp_url || c.rtsp_url === "avfoundation")
   );
@@ -314,12 +325,31 @@ function tickGrabacion() {
     const esAv = !cancha.rtsp_url || cancha.rtsp_url === "avfoundation";
 
     if (debeGrabar && !grabacionesContinuas[cancha.id]) {
-      if (esAv && streamProcesses[cancha.id]) continue; // stream activo tiene prioridad
-      if (esAv && avFoundationOcupado) continue;        // otra cancha ya usa la cámara
+      if (esAv && streamProcesses[cancha.id]) continue;
+      if (esAv && avFoundationOcupado) continue;
       iniciarGrabacionContinua(cancha);
-      if (esAv) avFoundationOcupado = true;             // bloquear las siguientes en este tick
+      if (esAv) avFoundationOcupado = true;
     } else if (!debeGrabar && grabacionesContinuas[cancha.id]) {
       detenerGrabacionContinua(cancha);
+    } else if (debeGrabar && grabacionesContinuas[cancha.id] && !esAv) {
+      // Heartbeat: si el archivo de grabación no creció en 2 min, reiniciar
+      const dir = path.join(RECORDINGS_DIR, cancha.id);
+      try {
+        const archivos = fs.readdirSync(dir)
+          .filter((f) => f.endsWith(".mp4"))
+          .map((f) => ({ f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        if (archivos.length > 0 && archivos[0].mtime < dosMinAtras) {
+          log(`🔄 [${cancha.nombre}] sin actividad 2 min — reiniciando grabación`);
+          detenerGrabacionContinua(cancha);
+          setTimeout(() => {
+            const c = canchas.find((x) => x.id === cancha.id);
+            if (c && dentroDeHorario()) iniciarGrabacionContinua(c);
+          }, 3000);
+        } else if (archivos.length > 0) {
+          retryCounts[cancha.id] = 0; // grabando estable → resetear backoff
+        }
+      } catch (_) {}
     }
   }
 }
@@ -340,6 +370,50 @@ function limpiarSegmentosViejos() {
       }
     } catch (_) {}
   }
+}
+
+// ── Monitoreo y estado ────────────────────────────────────────────────────────
+
+async function tickEstado() {
+  const camaras = canchas.map((c) => ({
+    id:       c.id,
+    nombre:   c.nombre,
+    grabando: !!grabacionesContinuas[c.id],
+    reintentos: retryCounts[c.id] || 0,
+  }));
+  await supabase.from("complejos").update({
+    recorder_status: {
+      ultima_actualizacion: new Date().toISOString(),
+      grabando: camaras.filter((c) => c.grabando).length,
+      camaras,
+    },
+  }).eq("id", COMPLEJO_ID);
+}
+
+function verificarDisco() {
+  try {
+    const { execSync } = require("child_process");
+    const out   = execSync(`/bin/df -k "${RECORDINGS_DIR}"`, { encoding: "utf8" });
+    const kbFree = parseInt(out.trim().split("\n")[1].split(/\s+/)[3]);
+    const gbFree = kbFree / 1024 / 1024;
+    if (gbFree < 20) log(`⚠️  DISCO: solo ${gbFree.toFixed(1)} GB libres — considerá liberar espacio`);
+  } catch (_) {}
+}
+
+async function esperarRed(host, puerto = 554, maxIntentos = 12) {
+  const net = require("net");
+  for (let i = 0; i < maxIntentos; i++) {
+    const ok = await new Promise((resolve) => {
+      const sock = net.createConnection({ host, port: puerto, timeout: 3000 });
+      sock.on("connect", () => { sock.destroy(); resolve(true); });
+      sock.on("error",   () => { sock.destroy(); resolve(false); });
+      sock.on("timeout", () => { sock.destroy(); resolve(false); });
+    });
+    if (ok) { if (i > 0) log(`✅ DVR accesible (${host})`); return; }
+    if (i === 0) log(`⏳ Esperando red / DVR (${host}:${puerto})…`);
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  log(`⚠️  DVR (${host}) no responde — arrancando igual`);
 }
 
 // ── Pre-procesamiento de segmentos ────────────────────────────────────────────
@@ -424,16 +498,13 @@ async function extraerSegmento(pedido, outputPath) {
   try { files = fs.readdirSync(dir); }
   catch { throw new Error("No hay grabaciones para esta cancha"); }
 
-  const segDurMin   = Math.ceil(parseInt(process.env.SEGMENT_SECS || "600") / 60);
-  const dosMinAtras = Date.now() - 2 * 60 * 1000;
-  const candidatos  = files
+  const segDurMin  = Math.ceil(parseInt(process.env.SEGMENT_SECS || "600") / 60);
+  const candidatos = files
     .map((f) => {
       const m = f.match(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})\.mp4$/);
       if (!m || m[1] !== pedido.fecha) return null;
       const startMin = parseInt(m[2]) * 60 + parseInt(m[3]);
-      const fp = path.join(dir, f);
-      try { if (fs.statSync(fp).mtimeMs > dosMinAtras) return null; } catch { return null; }
-      return { file: fp, startMin };
+      return { file: path.join(dir, f), startMin };
     })
     .filter(Boolean)
     .sort((a, b) => a.startMin - b.startMin)
@@ -781,14 +852,20 @@ log(`🚀 Recorder iniciado — Complejo: ${COMPLEJO_ID}`);
 log(`📁 Grabaciones: ${RECORDINGS_DIR}`);
 
 cargarCanchas().then(async () => {
+  // Esperar a que el DVR sea accesible antes de arrancar
+  const hostDvr = canchas.map((c) => c.rtsp_url).find((u) => u && u.startsWith("rtsp://"))
+    ?.match(/@([^:/]+)/)?.[1];
+  if (hostDvr) await esperarRed(hostDvr);
+
   hwEncoder = await detectarEncoder();
   await iniciarServidorOverlay();
   tickGrabacion();
   inicializarSegmentosProcessados();
-  // Resetear clips que quedaron trabados en "processing" por un reinicio anterior
   await supabase.from("clip_requests").update({ status: "pending" }).eq("status", "processing");
   log("🔄 Clips en processing reseteados a pending");
   await verificarStreams();
+  await tickEstado();
+  verificarDisco();
 
   supabase
     .channel("canchas-control")
@@ -823,7 +900,9 @@ process.on("SIGTERM", shutdown);
 process.on("SIGINT",  shutdown);
 
 // Chequear grabación cada minuto (arranca/para según horario)
-setInterval(tickGrabacion, 60 * 1000);
+setInterval(tickGrabacion,          60 * 1000);
+setInterval(tickEstado,             60 * 1000);
+setInterval(verificarDisco,     60 * 60 * 1000);
 
 // Pre-procesar segmentos cerrados cada minuto
 
