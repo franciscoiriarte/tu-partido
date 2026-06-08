@@ -19,3 +19,12 @@ export async function eliminarCancha(formData: FormData) {
   await supabase.from("canchas").delete().eq("id", id);
   revalidatePath("/admin");
 }
+
+export async function cambiarPassword(formData: FormData) {
+  const supabase = createAdminClient();
+  const user_id = formData.get("user_id") as string;
+  const password = formData.get("password") as string;
+
+  await supabase.auth.admin.updateUserById(user_id, { password });
+  revalidatePath("/admin");
+}

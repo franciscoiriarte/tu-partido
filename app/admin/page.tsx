@@ -1,8 +1,7 @@
 import { createAdminClient } from "@/utils/supabase/admin";
 import { createClient } from "@/utils/supabase/server";
 import { redirect } from "next/navigation";
-import { agregarCancha, eliminarCancha } from "./actions";
-import SubirVideo from "./SubirVideo";
+import { agregarCancha, eliminarCancha, cambiarPassword } from "./actions";
 
 export default async function AdminPage() {
   const supabase = await createClient();
@@ -18,20 +17,12 @@ export default async function AdminPage() {
     .select("*, canchas(*)")
     .order("nombre");
 
-  const { data: turnosRecientes } = await admin
-    .from("turnos")
-    .select("id, fecha, hora_inicio, hora_fin, canchas(nombre)")
-    .order("fecha", { ascending: false })
-    .order("hora_inicio", { ascending: false })
-    .limit(30);
-
-  const turnos = (turnosRecientes ?? []).map((t: any) => ({
-    id: t.id,
-    fecha: t.fecha,
-    hora_inicio: t.hora_inicio,
-    hora_fin: t.hora_fin,
-    cancha_nombre: t.canchas?.nombre ?? "",
-  }));
+  const emailsPorComplejo: Record<string, string> = {};
+  for (const c of complejos ?? []) {
+    if (!c.user_id) continue;
+    const { data } = await admin.auth.admin.getUserById(c.user_id);
+    if (data?.user?.email) emailsPorComplejo[c.id] = data.user.email;
+  }
 
   return (
     <main className="min-h-screen px-4 py-8 max-w-lg mx-auto" style={{ background: "var(--background)" }}>
@@ -45,9 +36,14 @@ export default async function AdminPage() {
 
       {complejos?.map((complejo) => (
         <div key={complejo.id} className="mb-10">
-          <h2 className="text-lg font-medium text-white mb-3">
+          <h2 className="text-lg font-medium text-white mb-1">
             {complejo.nombre}
           </h2>
+          {emailsPorComplejo[complejo.id] && (
+            <p className="text-xs text-white/40 mb-3">
+              {emailsPorComplejo[complejo.id]}
+            </p>
+          )}
 
           <ul className="mb-4">
             {complejo.canchas?.length === 0 && (
@@ -93,10 +89,30 @@ export default async function AdminPage() {
               Agregar
             </button>
           </form>
+
+          {complejo.user_id && (
+            <form action={cambiarPassword} className="flex gap-2 mt-3">
+              <input type="hidden" name="user_id" value={complejo.user_id} />
+              <input
+                type="text"
+                name="password"
+                placeholder="Nueva contraseña"
+                required
+                minLength={6}
+                className="px-3 py-2 text-sm text-white outline-none flex-1 border"
+                style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+              />
+              <button
+                type="submit"
+                className="px-4 py-2 text-sm font-semibold text-white/70 border"
+                style={{ borderColor: "var(--border)" }}
+              >
+                Cambiar contraseña
+              </button>
+            </form>
+          )}
         </div>
       ))}
-
-      <SubirVideo turnos={turnos} />
     </main>
   );
 }
